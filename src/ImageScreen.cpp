@@ -51,35 +51,18 @@ static const RGBColor Spectra6Palette[] = {
     {0, 204, 0}      // 5: Green (00cc00)
 };
 
-// Nearest-neighbor upscale: scales srcW x srcH image to fill 1200x1600,
-// maintaining aspect ratio. The buffer must be 1200x1600 in size.
 static void scaleToFit(uint16_t *buffer, uint32_t srcW, uint32_t srcH) {
   const uint32_t dstW = 1200;
   const uint32_t dstH = 1600;
 
-  if (srcW >= dstW && srcH >= dstH)
-    return; // Already big enough, nothing to do
+  if (srcW == dstW && srcH == dstH)
+    return; // Already exact size, nothing to do
 
-  // Copy source pixels into a temporary buffer
-  size_t srcSize = srcW * srcH * sizeof(uint16_t);
-  uint16_t *srcCopy = (uint16_t *)ps_malloc(srcSize);
-  if (!srcCopy) {
-    Serial.println("Failed to allocate temp buffer for upscaling");
-    return;
-  }
-  for (uint32_t y = 0; y < srcH; y++) {
-    memcpy(&srcCopy[y * srcW], &buffer[y * dstW], srcW * sizeof(uint16_t));
-  }
-
-  // Calculate scale to fill entire display (cover mode)
-  // Use integer math: scale = dst / src
-  // We want the image to fill the display, so use the larger scale factor
-  // scaleX = dstW / srcW, scaleY = dstH / srcH
-  // Pick the smaller scale to fit (contain mode), or larger to fill (cover
-  // mode) Using contain mode so the entire image is visible:
+  // Calculate scale to fit entire display (contain mode - preserves aspect
+  // ratio)
   float scaleX = (float)dstW / (float)srcW;
   float scaleY = (float)dstH / (float)srcH;
-  float scale = (scaleX < scaleY) ? scaleX : scaleY;
+  float scale = (scaleX < scaleY) ? scaleX : scaleY; // Use smaller scale to fit
 
   uint32_t scaledW = (uint32_t)(srcW * scale);
   uint32_t scaledH = (uint32_t)(srcH * scale);
@@ -88,33 +71,79 @@ static void scaleToFit(uint16_t *buffer, uint32_t srcW, uint32_t srcH) {
   if (scaledH > dstH)
     scaledH = dstH;
 
-  // Center the scaled image
+  // Center the scaled image (letterbox or pillarbox)
   uint32_t offsetX = (dstW - scaledW) / 2;
   uint32_t offsetY = (dstH - scaledH) / 2;
 
-  Serial.printf("Upscaling %dx%d -> %dx%d (scale=%.2f, offset=%d,%d)\n", srcW,
+  Serial.printf("Scaling %dx%d -> %dx%d (scale=%.2f, offset=%d,%d)\n", srcW,
                 srcH, scaledW, scaledH, scale, offsetX, offsetY);
 
-  // Fill entire buffer with white first
-  for (uint32_t i = 0; i < dstW * dstH; i++) {
-    buffer[i] = 0xFFFF;
-  }
-
-  // Nearest-neighbor scale
-  for (uint32_t dy = 0; dy < scaledH; dy++) {
-    uint32_t srcY = (dy * srcH) / scaledH;
-    if (srcY >= srcH)
-      srcY = srcH - 1;
+  // 1. Horizontal Scale (In Place)
+  // For each row, we horizontally scale and center it within the 1200 pixel
+  // width.
+  for (uint32_t y = 0; y < srcH; y++) {
+    uint16_t rowBuf[1200];
+    memcpy(rowBuf, &buffer[y * dstW], srcW * sizeof(uint16_t));
+    for (uint32_t x = 0; x < dstW; x++)
+      buffer[y * dstW + x] = 0xFFFF; // Clear back to white
     for (uint32_t dx = 0; dx < scaledW; dx++) {
-      uint32_t srcX = (dx * srcW) / scaledW;
+      uint32_t srcX = dx * srcW / scaledW;
       if (srcX >= srcW)
         srcX = srcW - 1;
-      buffer[(dy + offsetY) * dstW + (dx + offsetX)] =
-          srcCopy[srcY * srcW + srcX];
+      buffer[y * dstW + offsetX + dx] = rowBuf[srcX];
     }
   }
 
-  free(srcCopy);
+  // 2. Vertical Scale (In Place)
+  // We map srcY (0 to srcH-1) to dstY (offsetY to offsetY + scaledH - 1)
+  // To avoid overwriting source rows before we read them, we analyze the
+  // overlap mapping direction.
+  int32_t crossPoint = -1;
+  for (uint32_t dy = 0; dy < scaledH; dy++) {
+    uint32_t srcY = dy * srcH / scaledH;
+    uint32_t targetY = offsetY + dy;
+    if (targetY < srcY) {
+      crossPoint = dy;
+      break; // First point where target skips above source
+    }
+  }
+
+  // Bottom-up for the top half (where targetY >= srcY)
+  int32_t limitBottomUp = (crossPoint == -1) ? (scaledH - 1) : (crossPoint - 1);
+  for (int32_t dy = limitBottomUp; dy >= 0; dy--) {
+    uint32_t srcY = dy * srcH / scaledH;
+    if (srcY >= srcH)
+      srcY = srcH - 1;
+    uint32_t targetY = offsetY + dy;
+    if (targetY != srcY) {
+      memcpy(&buffer[targetY * dstW], &buffer[srcY * dstW],
+             dstW * sizeof(uint16_t));
+    }
+  }
+
+  // Top-down for the bottom half (where targetY < srcY)
+  if (crossPoint != -1) {
+    for (uint32_t dy = crossPoint; dy < scaledH; dy++) {
+      uint32_t srcY = dy * srcH / scaledH;
+      if (srcY >= srcH)
+        srcY = srcH - 1;
+      uint32_t targetY = offsetY + dy;
+      if (targetY != srcY) {
+        memcpy(&buffer[targetY * dstW], &buffer[srcY * dstW],
+               dstW * sizeof(uint16_t));
+      }
+    }
+  }
+
+  // 3. Fill the vertical letterbox areas with white
+  for (uint32_t y = 0; y < offsetY; y++) {
+    for (uint32_t x = 0; x < dstW; x++)
+      buffer[y * dstW + x] = 0xFFFF;
+  }
+  for (uint32_t y = offsetY + scaledH; y < dstH; y++) {
+    for (uint32_t x = 0; x < dstW; x++)
+      buffer[y * dstW + x] = 0xFFFF;
+  }
 }
 
 static uint8_t findNearestColor(int r, int g, int b) {
@@ -137,7 +166,7 @@ static uint8_t findNearestColor(int r, int g, int b) {
 // ---- Shared helpers for all dithering algorithms ----
 
 static std::unique_ptr<ColorImageBitmaps> allocateBitmaps(uint32_t width,
-                                                           uint32_t height) {
+                                                          uint32_t height) {
   int bitmapWidthBytes = (width + 7) / 8;
   size_t bitmapSize = bitmapWidthBytes * height;
   auto b = std::unique_ptr<ColorImageBitmaps>(new ColorImageBitmaps());
@@ -149,8 +178,8 @@ static std::unique_ptr<ColorImageBitmaps> allocateBitmaps(uint32_t width,
   b->redBitmap = (uint8_t *)ps_malloc(bitmapSize);
   b->blueBitmap = (uint8_t *)ps_malloc(bitmapSize);
   b->greenBitmap = (uint8_t *)ps_malloc(bitmapSize);
-  if (!b->blackBitmap || !b->yellowBitmap || !b->redBitmap ||
-      !b->blueBitmap || !b->greenBitmap) {
+  if (!b->blackBitmap || !b->yellowBitmap || !b->redBitmap || !b->blueBitmap ||
+      !b->greenBitmap) {
     Serial.println("Failed to allocate PSRAM for output bitmaps");
     return nullptr;
   }
@@ -163,13 +192,23 @@ static std::unique_ptr<ColorImageBitmaps> allocateBitmaps(uint32_t width,
 }
 
 static inline void setColorBit(ColorImageBitmaps &bm, uint8_t colorIdx,
-                                int byteIndex, uint8_t bitMask) {
+                               int byteIndex, uint8_t bitMask) {
   switch (colorIdx) {
-  case 0: bm.blackBitmap[byteIndex] |= bitMask; break;
-  case 2: bm.yellowBitmap[byteIndex] |= bitMask; break;
-  case 3: bm.redBitmap[byteIndex] |= bitMask; break;
-  case 4: bm.blueBitmap[byteIndex] |= bitMask; break;
-  case 5: bm.greenBitmap[byteIndex] |= bitMask; break;
+  case 0:
+    bm.blackBitmap[byteIndex] |= bitMask;
+    break;
+  case 2:
+    bm.yellowBitmap[byteIndex] |= bitMask;
+    break;
+  case 3:
+    bm.redBitmap[byteIndex] |= bitMask;
+    break;
+  case 4:
+    bm.blueBitmap[byteIndex] |= bitMask;
+    break;
+  case 5:
+    bm.greenBitmap[byteIndex] |= bitMask;
+    break;
   }
 }
 
@@ -185,7 +224,8 @@ static std::unique_ptr<ColorImageBitmaps>
 ditherFloydSteinberg(uint16_t *rgb565Buffer, uint32_t width, uint32_t height) {
   Serial.println("Dithering: Floyd-Steinberg");
   auto bitmaps = allocateBitmaps(width, height);
-  if (!bitmaps) return nullptr;
+  if (!bitmaps)
+    return nullptr;
   int bitmapWidthBytes = (width + 7) / 8;
 
   int16_t *errR_curr = (int16_t *)calloc(width, sizeof(int16_t));
@@ -213,23 +253,23 @@ ditherFloydSteinberg(uint16_t *rgb565Buffer, uint32_t width, uint32_t height) {
       int eB = b - Spectra6Palette[ci].b;
 
       if (x + 1 < width) {
-        errR_curr[x+1] += (eR * 7) / 16;
-        errG_curr[x+1] += (eG * 7) / 16;
-        errB_curr[x+1] += (eB * 7) / 16;
+        errR_curr[x + 1] += (eR * 7) / 16;
+        errG_curr[x + 1] += (eG * 7) / 16;
+        errB_curr[x + 1] += (eB * 7) / 16;
       }
       if (y + 1 < height) {
         if (x > 0) {
-          errR_next[x-1] += (eR * 3) / 16;
-          errG_next[x-1] += (eG * 3) / 16;
-          errB_next[x-1] += (eB * 3) / 16;
+          errR_next[x - 1] += (eR * 3) / 16;
+          errG_next[x - 1] += (eG * 3) / 16;
+          errB_next[x - 1] += (eB * 3) / 16;
         }
         errR_next[x] += (eR * 5) / 16;
         errG_next[x] += (eG * 5) / 16;
         errB_next[x] += (eB * 5) / 16;
         if (x + 1 < width) {
-          errR_next[x+1] += (eR * 1) / 16;
-          errG_next[x+1] += (eG * 1) / 16;
-          errB_next[x+1] += (eB * 1) / 16;
+          errR_next[x + 1] += (eR * 1) / 16;
+          errG_next[x + 1] += (eG * 1) / 16;
+          errB_next[x + 1] += (eB * 1) / 16;
         }
       }
     }
@@ -240,8 +280,12 @@ ditherFloydSteinberg(uint16_t *rgb565Buffer, uint32_t width, uint32_t height) {
     memset(errG_next, 0, width * sizeof(int16_t));
     memset(errB_next, 0, width * sizeof(int16_t));
   }
-  free(errR_curr); free(errG_curr); free(errB_curr);
-  free(errR_next); free(errG_next); free(errB_next);
+  free(errR_curr);
+  free(errG_curr);
+  free(errB_curr);
+  free(errR_next);
+  free(errG_next);
+  free(errB_next);
   return bitmaps;
 }
 
@@ -251,7 +295,8 @@ static std::unique_ptr<ColorImageBitmaps>
 ditherAtkinson(uint16_t *rgb565Buffer, uint32_t width, uint32_t height) {
   Serial.println("Dithering: Atkinson");
   auto bitmaps = allocateBitmaps(width, height);
-  if (!bitmaps) return nullptr;
+  if (!bitmaps)
+    return nullptr;
   int bitmapWidthBytes = (width + 7) / 8;
 
   // Need 3 rows of error: current, next, next+1
@@ -281,48 +326,76 @@ ditherAtkinson(uint16_t *rgb565Buffer, uint32_t width, uint32_t height) {
       int dB = (b - Spectra6Palette[ci].b) / 8;
 
       // Right +1, Right +2
-      if (x + 1 < width) { eR[0][x+1] += dR; eG[0][x+1] += dG; eB[0][x+1] += dB; }
-      if (x + 2 < width) { eR[0][x+2] += dR; eG[0][x+2] += dG; eB[0][x+2] += dB; }
+      if (x + 1 < width) {
+        eR[0][x + 1] += dR;
+        eG[0][x + 1] += dG;
+        eB[0][x + 1] += dB;
+      }
+      if (x + 2 < width) {
+        eR[0][x + 2] += dR;
+        eG[0][x + 2] += dG;
+        eB[0][x + 2] += dB;
+      }
       // Next row: left, center, right
       if (y + 1 < height) {
-        if (x > 0) { eR[1][x-1] += dR; eG[1][x-1] += dG; eB[1][x-1] += dB; }
-        eR[1][x] += dR; eG[1][x] += dG; eB[1][x] += dB;
-        if (x + 1 < width) { eR[1][x+1] += dR; eG[1][x+1] += dG; eB[1][x+1] += dB; }
+        if (x > 0) {
+          eR[1][x - 1] += dR;
+          eG[1][x - 1] += dG;
+          eB[1][x - 1] += dB;
+        }
+        eR[1][x] += dR;
+        eG[1][x] += dG;
+        eB[1][x] += dB;
+        if (x + 1 < width) {
+          eR[1][x + 1] += dR;
+          eG[1][x + 1] += dG;
+          eB[1][x + 1] += dB;
+        }
       }
       // Two rows down: center
-      if (y + 2 < height) { eR[2][x] += dR; eG[2][x] += dG; eB[2][x] += dB; }
+      if (y + 2 < height) {
+        eR[2][x] += dR;
+        eG[2][x] += dG;
+        eB[2][x] += dB;
+      }
     }
     // Rotate error rows
     int16_t *tmpR = eR[0], *tmpG = eG[0], *tmpB = eB[0];
-    eR[0] = eR[1]; eG[0] = eG[1]; eB[0] = eB[1];
-    eR[1] = eR[2]; eG[1] = eG[2]; eB[1] = eB[2];
-    eR[2] = tmpR;  eG[2] = tmpG;  eB[2] = tmpB;
+    eR[0] = eR[1];
+    eG[0] = eG[1];
+    eB[0] = eB[1];
+    eR[1] = eR[2];
+    eG[1] = eG[2];
+    eB[1] = eB[2];
+    eR[2] = tmpR;
+    eG[2] = tmpG;
+    eB[2] = tmpB;
     memset(eR[2], 0, width * sizeof(int16_t));
     memset(eG[2], 0, width * sizeof(int16_t));
     memset(eB[2], 0, width * sizeof(int16_t));
   }
-  for (int i = 0; i < 3; i++) { free(eR[i]); free(eG[i]); free(eB[i]); }
+  for (int i = 0; i < 3; i++) {
+    free(eR[i]);
+    free(eG[i]);
+    free(eB[i]);
+  }
   return bitmaps;
 }
 
 // ---- Ordered (Bayer 8x8) dithering — no error diffusion ----
 
 static const uint8_t bayer8x8[8][8] = {
-  { 0, 32,  8, 40,  2, 34, 10, 42},
-  {48, 16, 56, 24, 50, 18, 58, 26},
-  {12, 44,  4, 36, 14, 46,  6, 38},
-  {60, 28, 52, 20, 62, 30, 54, 22},
-  { 3, 35, 11, 43,  1, 33,  9, 41},
-  {51, 19, 59, 27, 49, 17, 57, 25},
-  {15, 47,  7, 39, 13, 45,  5, 37},
-  {63, 31, 55, 23, 61, 29, 53, 21}
-};
+    {0, 32, 8, 40, 2, 34, 10, 42},  {48, 16, 56, 24, 50, 18, 58, 26},
+    {12, 44, 4, 36, 14, 46, 6, 38}, {60, 28, 52, 20, 62, 30, 54, 22},
+    {3, 35, 11, 43, 1, 33, 9, 41},  {51, 19, 59, 27, 49, 17, 57, 25},
+    {15, 47, 7, 39, 13, 45, 5, 37}, {63, 31, 55, 23, 61, 29, 53, 21}};
 
 static std::unique_ptr<ColorImageBitmaps>
 ditherOrdered(uint16_t *rgb565Buffer, uint32_t width, uint32_t height) {
   Serial.println("Dithering: Ordered (Bayer 8x8)");
   auto bitmaps = allocateBitmaps(width, height);
-  if (!bitmaps) return nullptr;
+  if (!bitmaps)
+    return nullptr;
   int bitmapWidthBytes = (width + 7) / 8;
 
   for (uint32_t y = 0; y < height; y++) {
@@ -351,7 +424,8 @@ static std::unique_ptr<ColorImageBitmaps>
 ditherNone(uint16_t *rgb565Buffer, uint32_t width, uint32_t height) {
   Serial.println("Dithering: None (nearest colour)");
   auto bitmaps = allocateBitmaps(width, height);
-  if (!bitmaps) return nullptr;
+  if (!bitmaps)
+    return nullptr;
   int bitmapWidthBytes = (width + 7) / 8;
 
   for (uint32_t y = 0; y < height; y++) {
@@ -373,10 +447,14 @@ std::unique_ptr<ColorImageBitmaps>
 ImageScreen::ditherImage(uint16_t *rgb565Buffer, uint32_t width,
                          uint32_t height) {
   switch (config.ditherMode) {
-  case DITHER_ATKINSON: return ditherAtkinson(rgb565Buffer, width, height);
-  case DITHER_ORDERED:  return ditherOrdered(rgb565Buffer, width, height);
-  case DITHER_NONE:     return ditherNone(rgb565Buffer, width, height);
-  default:              return ditherFloydSteinberg(rgb565Buffer, width, height);
+  case DITHER_ATKINSON:
+    return ditherAtkinson(rgb565Buffer, width, height);
+  case DITHER_ORDERED:
+    return ditherOrdered(rgb565Buffer, width, height);
+  case DITHER_NONE:
+    return ditherNone(rgb565Buffer, width, height);
+  default:
+    return ditherFloydSteinberg(rgb565Buffer, width, height);
   }
 }
 
@@ -417,7 +495,19 @@ ImageScreen::decodeJPG(uint8_t *data, size_t dataSize,
 
   uint16_t w = 0, h = 0;
   TJpgDec.getJpgSize(&w, &h, data, dataSize);
-  Serial.printf("JPEG Size: %dx%d\n", w, h);
+
+  // Calculate scale factor to reduce PSRAM allocation for huge images
+  // TJpgDec only supports scaling down by 1, 2, 4, or 8.
+  uint8_t scale = 1;
+  while ((w / scale > 1200) || (h / scale > 1600)) {
+    if (scale == 8)
+      break;
+    scale *= 2;
+  }
+  TJpgDec.setJpgScale(scale);
+  Serial.printf("JPEG Original Size: %dx%d, Pre-scaling: 1/%d\n", w, h, scale);
+  w /= scale;
+  h /= scale;
 
   if (TJpgDec.drawJpg(0, 0, data, dataSize) != 0) {
     Serial.println("JPEG decode failed");
@@ -432,8 +522,8 @@ ImageScreen::decodeJPG(uint8_t *data, size_t dataSize,
     *freeAfterDecode = nullptr;
   }
 
-  // Scale up small images to fill the display
-  if (w < 1200 || h < 1600) {
+  // Scale all images that don't exactly match the display to fit
+  if (w != 1200 || h != 1600) {
     scaleToFit(jpgRgb565Buffer, w, h);
   }
 
@@ -537,11 +627,9 @@ std::unique_ptr<ColorImageBitmaps> ImageScreen::decodePNG(File &file) {
     return nullptr;
   }
 
-  // Scale up small images to fill the display
-  int finalW = (imgW > 1200) ? 1200 : imgW;
-  int finalH = (imgH > 1600) ? 1600 : imgH;
-  if (finalW < 1200 || finalH < 1600) {
-    scaleToFit(pngRgb565Buffer, finalW, finalH);
+  // Scale all images that don't exactly match the display to fit
+  if (imgW != 1200 || imgH != 1600) {
+    scaleToFit(pngRgb565Buffer, imgW, imgH);
   }
 
   auto bitmaps = ditherImage(pngRgb565Buffer, 1200, 1600);
@@ -584,13 +672,12 @@ std::unique_ptr<ColorImageBitmaps> ImageScreen::decodePNG(uint8_t *data,
     return nullptr;
   }
 
-  // Scale up small images to fill the display
   int pngW = png->getWidth();
   int pngH = png->getHeight();
-  int finalW = (pngW > 1200) ? 1200 : pngW;
-  int finalH = (pngH > 1600) ? 1600 : pngH;
-  if (finalW < 1200 || finalH < 1600) {
-    scaleToFit(pngRgb565Buffer, finalW, finalH);
+
+  // Scale all images that don't exactly match the display to fit
+  if (pngW != 1200 || pngH != 1600) {
+    scaleToFit(pngRgb565Buffer, pngW, pngH);
   }
 
   auto bitmaps = ditherImage(pngRgb565Buffer, 1200, 1600);
@@ -821,7 +908,7 @@ std::unique_ptr<ColorImageBitmaps> ImageScreen::loadFromFolder() {
 
   FolderImageSource folderSource;
   auto result = folderSource.fetchImage(String(config.folderUrl), imageIndex,
-                                         totalImages);
+                                        totalImages);
 
   if (!result || result->httpCode != HTTP_CODE_OK || !result->data) {
     printf("Folder: failed to fetch image\r\n");
@@ -861,8 +948,7 @@ void ImageScreen::render() {
     }
 
     if (downloadResult->httpCode == HTTP_CODE_OK) {
-      bitmaps =
-          processImageData(downloadResult->data, downloadResult->size);
+      bitmaps = processImageData(downloadResult->data, downloadResult->size);
     } else {
       printf("Failed to download image (HTTP %d)\r\n",
              downloadResult->httpCode);

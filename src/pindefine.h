@@ -24,9 +24,13 @@
 #define SW_4 21
 
 //==============  SD Card Setting  ==============//
-// SD card shares SPI bus with display (SPI3_HOST).
-// Access SD card BEFORE display init, then free the bus.
-#define SD_CS 21 // SD card chip select (shared with SW_4)
+// SD card has its own SPI data pins (GPIO 3, 4) but shares
+// GPIO 18 with the display (display CS0 = SD SCK).
+// Access SD card BEFORE display init, then release the bus.
+#define SD_CS 15  // SD card chip select
+#define SD_MOSI 3 // SD card CMD (data in)
+#define SD_MISO 4 // SD card D0  (data out)
+#define SD_SCK 18 // SD card clock (SHARED with SPI_CS0!)
 
 //===============================================
 

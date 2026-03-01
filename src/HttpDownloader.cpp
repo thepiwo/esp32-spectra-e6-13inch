@@ -8,15 +8,21 @@ HttpDownloader::~HttpDownloader() {}
 
 std::unique_ptr<DownloadResult>
 HttpDownloader::download(const String &url, const String &cachedETag) {
-  WiFiClientSecure client;
-  client.setInsecure(); // Allow HTTPS without certificate validation
-
   HTTPClient http;
+
+  if (url.startsWith("https://")) {
+    WiFiClientSecure *client = new WiFiClientSecure;
+    client->setInsecure(); // Allow HTTPS without certificate validation
+    http.begin(*client, url);
+  } else {
+    WiFiClient *client = new WiFiClient;
+    http.begin(*client, url);
+  }
+
   auto result = std::unique_ptr<DownloadResult>(new DownloadResult());
 
   Serial.println("Requesting data from: " + url);
 
-  http.begin(client, url);
   http.setTimeout(10000);
 
   if (cachedETag.length() > 0) {

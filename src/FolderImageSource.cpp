@@ -5,11 +5,17 @@
 #include <algorithm>
 
 String FolderImageSource::fetchDirectoryListing(const String &url) {
-  WiFiClientSecure client;
-  client.setInsecure();
-
   HTTPClient http;
-  http.begin(client, url);
+
+  if (url.startsWith("https://")) {
+    WiFiClientSecure *client = new WiFiClientSecure;
+    client->setInsecure();
+    http.begin(*client, url);
+  } else {
+    WiFiClient *client = new WiFiClient;
+    http.begin(*client, url);
+  }
+
   http.setTimeout(10000);
 
   int httpCode = http.GET();
@@ -31,9 +37,8 @@ static bool isImageExtension(const String &filename) {
          lower.endsWith(".png") || lower.endsWith(".bmp");
 }
 
-std::vector<String>
-FolderImageSource::parseImageLinks(const String &html,
-                                    const String &baseUrl) {
+std::vector<String> FolderImageSource::parseImageLinks(const String &html,
+                                                       const String &baseUrl) {
   std::vector<String> images;
 
   // Ensure baseUrl ends with /
@@ -73,6 +78,9 @@ FolderImageSource::parseImageLinks(const String &html,
         int hostEnd = base.indexOf("/", schemeEnd + 3);
         if (hostEnd != -1) {
           images.push_back(base.substring(0, hostEnd) + link);
+        } else {
+          // No trailing slash on host
+          images.push_back(base.substring(0) + link.substring(1));
         }
       }
     } else {
@@ -98,7 +106,7 @@ FolderImageSource::parseImageLinks(const String &html,
 
 std::unique_ptr<DownloadResult>
 FolderImageSource::fetchImage(const String &folderUrl, uint16_t imageIndex,
-                               uint16_t &totalImages) {
+                              uint16_t &totalImages) {
   Serial.printf("Folder: fetching directory listing from %s\n",
                 folderUrl.c_str());
 
