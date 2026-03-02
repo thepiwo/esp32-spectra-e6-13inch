@@ -18,6 +18,10 @@ HttpDownloader::download(const String &url, const String &cachedETag) {
   } else {
     client.reset(new WiFiClient);
   }
+  Serial.printf("Net: Free Heap: %d, Free PSRAM: %d\n", ESP.getFreeHeap(),
+                ESP.getFreePsram());
+  Serial.printf("Folder Listing Net: Free Heap: %d, Free PSRAM: %d\n",
+                ESP.getFreeHeap(), ESP.getFreePsram());
   http.begin(*client, url);
 
   auto result = std::unique_ptr<DownloadResult>(new DownloadResult());

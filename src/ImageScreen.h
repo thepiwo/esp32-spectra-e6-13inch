@@ -2,12 +2,13 @@
 #define IMAGE_SCREEN_H
 
 #include <Arduino.h>
+#include <JPEGDEC.h>
 #include <PNGdec.h>
-#include <TJpg_Decoder.h>
 #include <U8g2_for_Adafruit_GFX.h>
 #include <esp_attr.h>
 #include <memory>
 #include <stdint.h>
+
 
 #include "ApplicationConfig.h"
 #include "ApplicationConfigStorage.h"
@@ -72,8 +73,6 @@ private:
   std::unique_ptr<ColorImageBitmaps> loadFromFolder();
   std::unique_ptr<ColorImageBitmaps>
   ditherImage(uint16_t *rgb565Buffer, uint32_t width, uint32_t height);
-  static bool jpgOutput(int16_t x, int16_t y, uint16_t w, uint16_t h,
-                        uint16_t *bitmap);
 
   std::unique_ptr<ColorImageBitmaps> decodeJPG(uint8_t *data, size_t dataSize);
   std::unique_ptr<ColorImageBitmaps> decodeJPG(const String &filename);

@@ -1,9 +1,9 @@
 #include "ImageScreen.h"
 #include <Arduino.h>
 
+#include <JPEGDEC.h>
 #include <LittleFS.h>
 #include <PNGdec.h>
-#include <TJpg_Decoder.h>
 #include <WiFi.h>
 
 #include "FolderImageSource.h"
@@ -488,24 +488,27 @@ ImageScreen::ditherImage(uint16_t *rgb565Buffer, uint32_t width,
 }
 
 static uint16_t *jpgRgb565Buffer = nullptr;
-static uint32_t jpgWidth = 0;
 
-bool ImageScreen::jpgOutput(int16_t x, int16_t y, uint16_t w, uint16_t h,
-                            uint16_t *bitmap) {
-  if (y >= 1600 || x >= 1200)
-    return true;
+static int JPEGDraw(JPEGDRAW *pDraw) {
+  if (pDraw->y >= 1600 || pDraw->x >= 1200)
+    return 1;
 
-  for (int j = 0; j < h; j++) {
-    for (int i = 0; i < w; i++) {
-      int curX = x + i;
-      int curY = y + j;
-      if (curX < 1200 && curY < 1600) {
+  int iWidth = pDraw->iWidth;
+  int iHeight = pDraw->iHeight;
+
+  for (int j = 0; j < iHeight; j++) {
+    int curY = pDraw->y + j;
+    if (curY >= 1600)
+      break;
+    for (int i = 0; i < iWidth; i++) {
+      int curX = pDraw->x + i;
+      if (curX < 1200) {
         size_t idx = curY * 1200 + curX;
-        jpgRgb565Buffer[idx] = bitmap[j * w + i];
+        jpgRgb565Buffer[idx] = pDraw->pPixels[j * iWidth + i];
       }
     }
   }
-  return true;
+  return 1;
 }
 
 std::unique_ptr<ColorImageBitmaps> ImageScreen::decodeJPG(uint8_t *data,
@@ -518,14 +521,9 @@ std::unique_ptr<ColorImageBitmaps> ImageScreen::decodeJPG(uint8_t *data,
   }
   memset(jpgRgb565Buffer, 0xFFFF, 1200 * 1600 * 2); // White background
 
-  TJpgDec.setJpgScale(1);
-  TJpgDec.setCallback(jpgOutput);
-
-  uint16_t w = 0, h = 0;
-  uint8_t res = TJpgDec.getJpgSize(&w, &h, data, dataSize);
-  if (res != 0) {
-    Serial.printf("JPEG Error: Failed to get size (Error: %d, DataSize: %d)\n",
-                  res, dataSize);
+  JPEGDEC jpg;
+  if (!jpg.openRAM(data, dataSize, JPEGDraw)) {
+    Serial.println("JPEG Error: Failed to open from RAM");
     if (dataSize >= 4) {
       Serial.printf("Buffer Header: %02X %02X %02X %02X\n", data[0], data[1],
                     data[2], data[3]);
@@ -534,26 +532,41 @@ std::unique_ptr<ColorImageBitmaps> ImageScreen::decodeJPG(uint8_t *data,
     return nullptr;
   }
 
+  int w = jpg.getWidth();
+  int h = jpg.getHeight();
+
   // Calculate scale factor to reduce PSRAM allocation for huge images
-  // TJpgDec only supports scaling down by 1, 2, 4, or 8.
-  uint8_t scale = 1;
+  // JPEGDEC supports scaling down by 1, 2, 4, or 8 (using JPEG_SCALE_X)
+  int scale_option = 0; // 0=full, 1=1/2, 2=1/4, 3=1/8
+  int scale = 1;
   while ((w / scale > 1200) || (h / scale > 1600)) {
     if (scale == 8)
       break;
     scale *= 2;
+    scale_option++;
   }
-  TJpgDec.setJpgScale(scale);
-  Serial.printf("JPEG Original Size: %dx%d, Pre-scaling: 1/%d\n", w, h, scale);
+
+  int decode_options = 0;
+  if (scale_option == 1)
+    decode_options = JPEG_SCALE_HALF;
+  else if (scale_option == 2)
+    decode_options = JPEG_SCALE_QUARTER;
+  else if (scale_option == 3)
+    decode_options = JPEG_SCALE_EIGHTH;
+
+  Serial.printf(
+      "JPEG Original Size: %dx%d, Pre-scaling: 1/%d, Progressive: %s\n", w, h,
+      scale, jpg.isProgressive() ? "Yes" : "No");
+
   w /= scale;
   h /= scale;
 
-  if (TJpgDec.drawJpg(0, 0, data, dataSize) != 0) {
-    Serial.println("JPEG decode failed during draw");
+  if (!jpg.decode(0, 0, decode_options)) {
+    Serial.println("JPEG decode failed");
     free(jpgRgb565Buffer);
     return nullptr;
   }
-
-  // Memory is automatically managed by the DownloadResult destructor
+  jpg.close();
 
   // Scale all images that don't exactly match the display to fit
   if (w != 1200 || h != 1600) {
@@ -821,54 +834,28 @@ std::unique_ptr<ColorImageBitmaps> ImageScreen::decodeBMP(uint8_t *data,
 
 std::unique_ptr<ColorImageBitmaps>
 ImageScreen::decodeJPG(const String &filename) {
-  Serial.println("Decoding JPEG (Streaming from LittleFS)...");
-  jpgRgb565Buffer = (uint16_t *)ps_malloc(1200 * 1600 * 2);
-  if (!jpgRgb565Buffer) {
-    Serial.println("Failed to allocate PSRAM for JPEG RGB565 buffer");
-    return nullptr;
-  }
-  memset(jpgRgb565Buffer, 0xFFFF, 1200 * 1600 * 2); // White background
+  Serial.printf("Decoding JPEG from file: %s\n", filename.c_str());
 
-  TJpgDec.setJpgScale(1);
-  TJpgDec.setCallback(jpgOutput);
-
-  uint16_t w = 0, h = 0;
   fs::File file = LittleFS.open(filename, FILE_READ);
   if (!file) {
     Serial.println("Failed to open file for JPEG decode");
-    free(jpgRgb565Buffer);
     return nullptr;
   }
-  TJpgDec.getFsJpgSize(&w, &h, file);
-  file.close();
 
-  uint8_t scale = 1;
-  while ((w / scale > 1200) || (h / scale > 1600)) {
-    if (scale == 8)
-      break;
-    scale *= 2;
-  }
-  TJpgDec.setJpgScale(scale);
-  Serial.printf("JPEG Original Size: %dx%d, Pre-scaling: 1/%d\n", w, h, scale);
-  w /= scale;
-  h /= scale;
-
-  file = LittleFS.open(filename, FILE_READ);
-  if (TJpgDec.drawFsJpg(0, 0, file) != 0) {
-    Serial.println("JPEG decode failed");
+  size_t size = file.size();
+  uint8_t *buffer = (uint8_t *)ps_malloc(size);
+  if (!buffer) {
+    Serial.println("Failed to allocate PSRAM for JPEG file buffer");
     file.close();
-    free(jpgRgb565Buffer);
     return nullptr;
   }
+
+  file.read(buffer, size);
   file.close();
 
-  // Scale all images that don't exactly match the display to fit
-  if (w != 1200 || h != 1600) {
-    scaleToFit(jpgRgb565Buffer, w, h, config.scalingMode);
-  }
+  auto bitmaps = decodeJPG(buffer, size);
+  free(buffer);
 
-  auto bitmaps = ditherImage(jpgRgb565Buffer, 1200, 1600);
-  free(jpgRgb565Buffer);
   return bitmaps;
 }
 

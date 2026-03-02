@@ -1,6 +1,0 @@
-.pio/build/esp32s3/lib1ee/U8g2/clib/u8g2_hvline.c.o: \
- .pio/libdeps/esp32s3/U8g2/src/clib/u8g2_hvline.c \
- .pio/libdeps/esp32s3/U8g2/src/clib/u8g2.h \
- .pio/libdeps/esp32s3/U8g2/src/clib/u8x8.h \
- C:/Users/DanW/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/newlib/platform_include/assert.h \
- C:/Users/DanW/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/qio_opi/include/sdkconfig.h
