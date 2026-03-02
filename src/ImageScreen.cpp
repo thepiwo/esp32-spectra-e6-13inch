@@ -816,6 +816,19 @@ std::unique_ptr<ColorImageBitmaps> ImageScreen::loadFromLittleFS() {
 }
 
 std::unique_ptr<ColorImageBitmaps> ImageScreen::loadFromFolder() {
+  // Priority: pinned image overrides cycling
+  if (config.hasPinnedImage()) {
+    Serial.printf("Folder: loading pinned image: %s\n", config.pinnedImageUrl);
+    FolderImageSource folderSource;
+    auto result = folderSource.fetchImageByUrl(String(config.pinnedImageUrl));
+    if (result && result->httpCode == HTTP_CODE_OK && result->data) {
+      Serial.printf("Folder: processing pinned image (%d bytes)\n", result->size);
+      auto bitmaps = processImageData(result->data, result->size, &result->data);
+      if (bitmaps) return bitmaps;
+    }
+    Serial.println("Folder: pinned image failed, falling back to cycling");
+  }
+
   uint16_t imageIndex = configStorage.loadImageIndex();
   uint16_t totalImages = 0;
 

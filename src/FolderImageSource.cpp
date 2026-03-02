@@ -125,3 +125,9 @@ FolderImageSource::fetchImage(const String &folderUrl, uint16_t imageIndex,
 
   return downloader.download(imageUrls[idx]);
 }
+
+std::unique_ptr<DownloadResult>
+FolderImageSource::fetchImageByUrl(const String &imageUrl) {
+  Serial.printf("Folder: downloading pinned image: %s\n", imageUrl.c_str());
+  return downloader.download(imageUrl);
+}

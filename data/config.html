@@ -291,6 +291,66 @@
             }
 
         }
+
+        .image-list-item {
+            padding: 12px 14px;
+            border-bottom: 1px solid #e5e7eb;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background-color 0.15s ease;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .image-list-item:last-child {
+            border-bottom: none;
+        }
+
+        .image-list-item:active {
+            background-color: rgba(59, 130, 246, 0.15);
+        }
+
+        .image-list-item.pinned {
+            background-color: rgba(59, 130, 246, 0.08);
+            font-weight: 600;
+        }
+
+        .image-list-item .pin-indicator {
+            font-size: 11px;
+            color: #3b82f6;
+            font-weight: 600;
+            flex-shrink: 0;
+            margin-left: 8px;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            .image-list-item {
+                border-bottom-color: #475569;
+            }
+
+            .image-list-item:active {
+                background-color: rgba(96, 165, 250, 0.15);
+            }
+
+            .image-list-item.pinned {
+                background-color: rgba(96, 165, 250, 0.1);
+            }
+
+            .image-list-item .pin-indicator {
+                color: #60a5fa;
+            }
+
+            #pinnedInfo {
+                background: rgba(96, 165, 250, 0.1) !important;
+                border-color: rgba(96, 165, 250, 0.3) !important;
+                color: #93c5fd !important;
+            }
+
+            #imageList {
+                border-color: #475569 !important;
+            }
+        }
     </style>
 </head>
 
@@ -332,6 +392,36 @@
                     HTTP server directory with images. The device will cycle through them in order.
                     Works with nginx autoindex, Python http.server, NAS web shares, etc.
                 </small>
+            </div>
+
+            <input type="hidden" id="pinnedImageUrl" name="pinnedImageUrl" value="{{CURRENT_PINNED_IMAGE_URL}}">
+
+            <div id="folderBrowseSection" style="display:none; margin-bottom: 24px;">
+                <button type="button" class="btn" id="browseBtn"
+                    style="background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); margin-top: 0; margin-bottom: 12px;">
+                    Browse Folder Images
+                </button>
+
+                <div id="imageListContainer" style="display:none;">
+                    <div id="pinnedInfo" style="display:none; padding: 10px; margin-bottom: 10px;
+                        background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.3);
+                        border-radius: 8px; font-size: 13px; color: #1d4ed8;">
+                        <strong>Pinned:</strong> <span id="pinnedName"></span>
+                        <button type="button" id="unpinBtn"
+                            style="float: right; background: #ef4444; color: white; border: none;
+                            border-radius: 6px; padding: 4px 12px; cursor: pointer; font-size: 12px;">
+                            Unpin
+                        </button>
+                    </div>
+
+                    <div id="imageList" style="max-height: 300px; overflow-y: auto;
+                        border: 1px solid #e5e7eb; border-radius: 8px;">
+                    </div>
+
+                    <small style="color: #6b7280; font-size: 12px; margin-top: 6px; display: block;">
+                        Select an image to pin it. The display will show this image instead of cycling.
+                    </small>
+                </div>
             </div>
 
             <hr style="border: 0; border-top: 1px solid rgba(0,0,0,0.1); margin: 24px 0;">
@@ -435,6 +525,7 @@
                 formData.append('ditherMode', ditherMode);
                 formData.append('imageChangeMinutes', imageChangeMinutes);
                 formData.append('sleepMinutes', sleepMinutes);
+                formData.append('pinnedImageUrl', document.getElementById('pinnedImageUrl').value);
 
                 const response = await fetch('/save', {
                     method: 'POST',
@@ -523,6 +614,153 @@
                 initialViewportHeight = window.innerHeight;
                 handleViewportChange();
             }, 500);
+        });
+
+        // --- Folder Browse Logic ---
+        var folderUrlInput = document.getElementById('folderUrl');
+        var browseSection = document.getElementById('folderBrowseSection');
+        var browseBtn = document.getElementById('browseBtn');
+        var imageListContainer = document.getElementById('imageListContainer');
+        var imageListDiv = document.getElementById('imageList');
+        var pinnedInfo = document.getElementById('pinnedInfo');
+        var pinnedNameSpan = document.getElementById('pinnedName');
+        var unpinBtn = document.getElementById('unpinBtn');
+        var pinnedInput = document.getElementById('pinnedImageUrl');
+
+        function updateBrowseVisibility() {
+            browseSection.style.display = folderUrlInput.value.trim() ? 'block' : 'none';
+        }
+        folderUrlInput.addEventListener('input', updateBrowseVisibility);
+        updateBrowseVisibility();
+
+        function updatePinnedDisplay(url) {
+            if (url) {
+                var lastSlash = url.lastIndexOf('/');
+                var name = lastSlash >= 0 ? decodeURIComponent(url.substring(lastSlash + 1)) : url;
+                pinnedNameSpan.textContent = name;
+                pinnedInfo.style.display = 'block';
+            } else {
+                pinnedInfo.style.display = 'none';
+            }
+        }
+        updatePinnedDisplay(pinnedInput.value);
+
+        browseBtn.addEventListener('click', async function () {
+            browseBtn.disabled = true;
+            browseBtn.textContent = 'Loading...';
+            imageListContainer.style.display = 'block';
+            imageListDiv.innerHTML = '';
+
+            try {
+                var response = await fetch('/api/folder-images');
+                if (!response.ok) {
+                    var err = await response.json();
+                    throw new Error(err.error || 'Request failed');
+                }
+                var images = await response.json();
+
+                if (images.length === 0) {
+                    imageListDiv.innerHTML = '<div style="padding:16px;text-align:center;color:#6b7280;">No images found in folder.</div>';
+                } else {
+                    images.forEach(function (img) {
+                        var item = document.createElement('div');
+                        item.className = 'image-list-item';
+                        item.dataset.url = img.url;
+                        if (pinnedInput.value === img.url) {
+                            item.classList.add('pinned');
+                        }
+                        var nameSpan = document.createElement('span');
+                        nameSpan.textContent = decodeURIComponent(img.name);
+                        nameSpan.style.overflow = 'hidden';
+                        nameSpan.style.textOverflow = 'ellipsis';
+                        nameSpan.style.whiteSpace = 'nowrap';
+                        item.appendChild(nameSpan);
+
+                        if (pinnedInput.value === img.url) {
+                            var indicator = document.createElement('span');
+                            indicator.className = 'pin-indicator';
+                            indicator.textContent = 'PINNED';
+                            item.appendChild(indicator);
+                        }
+
+                        item.addEventListener('click', function () { pinImage(img.url, img.name); });
+                        imageListDiv.appendChild(item);
+                    });
+                }
+            } catch (error) {
+                imageListDiv.innerHTML = '<div style="padding:16px;text-align:center;color:#dc2626;">Error: ' + error.message + '</div>';
+            }
+
+            browseBtn.disabled = false;
+            browseBtn.textContent = 'Browse Folder Images';
+        });
+
+        async function pinImage(url, name) {
+            try {
+                var formData = new FormData();
+                formData.append('url', url);
+                var response = await fetch('/api/pin-image', { method: 'POST', body: formData });
+                if (!response.ok) throw new Error('Pin failed');
+
+                pinnedInput.value = url;
+                updatePinnedDisplay(url);
+
+                document.querySelectorAll('.image-list-item').forEach(function (el) {
+                    el.classList.remove('pinned');
+                    var ind = el.querySelector('.pin-indicator');
+                    if (ind) ind.remove();
+                });
+
+                document.querySelectorAll('.image-list-item').forEach(function (el) {
+                    if (el.dataset.url === url) {
+                        el.classList.add('pinned');
+                        var indicator = document.createElement('span');
+                        indicator.className = 'pin-indicator';
+                        indicator.textContent = 'PINNED';
+                        el.appendChild(indicator);
+                    }
+                });
+
+                var statusDiv = document.getElementById('status');
+                statusDiv.className = 'status success';
+                statusDiv.textContent = 'Image pinned! It will display on next refresh.';
+                statusDiv.style.display = 'flex';
+                setTimeout(function () { statusDiv.style.display = 'none'; }, 3000);
+            } catch (error) {
+                var statusDiv = document.getElementById('status');
+                statusDiv.className = 'status error';
+                statusDiv.textContent = 'Failed to pin image: ' + error.message;
+                statusDiv.style.display = 'flex';
+            }
+        }
+
+        unpinBtn.addEventListener('click', async function () {
+            try {
+                var formData = new FormData();
+                formData.append('url', '');
+                var response = await fetch('/api/pin-image', { method: 'POST', body: formData });
+                if (!response.ok) throw new Error('Unpin failed');
+
+                pinnedInput.value = '';
+                updatePinnedDisplay('');
+
+                document.querySelectorAll('.image-list-item').forEach(function (el) {
+                    el.classList.remove('pinned');
+                    var ind = el.querySelector('.pin-indicator');
+                    if (ind) ind.remove();
+                });
+
+                var statusDiv = document.getElementById('status');
+                statusDiv.className = 'status success';
+                statusDiv.textContent = 'Unpinned. Display will resume cycling.';
+                statusDiv.style.display = 'flex';
+                setTimeout(function () { statusDiv.style.display = 'none'; }, 3000);
+            } catch (error) {
+                var statusDiv = document.getElementById('status');
+                statusDiv.className = 'status error';
+                statusDiv.textContent = 'Failed to unpin: ' + error.message;
+                statusDiv.style.display = 'flex';
+            }
         });
     </script>
 </body>

@@ -23,6 +23,7 @@ struct ApplicationConfig {
   char wifiPassword[64];
   char imageUrl[300];
   char folderUrl[300];        // HTTP folder URL for image cycling
+  char pinnedImageUrl[300];   // Full URL of a pinned folder image (empty = cycling)
   uint8_t ditherMode;         // DitherMode enum value
   uint16_t sleepMinutes;      // 0 = no timed wake (permanent sleep after server timeout)
   uint16_t imageChangeMinutes; // How often to advance to the next image (0 = every wake)
@@ -34,6 +35,7 @@ struct ApplicationConfig {
     memset(wifiPassword, 0, sizeof(wifiPassword));
     memset(imageUrl, 0, sizeof(imageUrl));
     memset(folderUrl, 0, sizeof(folderUrl));
+    memset(pinnedImageUrl, 0, sizeof(pinnedImageUrl));
 
     strncpy(wifiSSID, DEFAULT_WIFI_SSID, sizeof(wifiSSID) - 1);
     strncpy(wifiPassword, DEFAULT_WIFI_PASSWORD, sizeof(wifiPassword) - 1);
@@ -46,4 +48,5 @@ struct ApplicationConfig {
 
   bool hasValidWiFiCredentials() const { return strlen(wifiSSID) > 0 && strlen(wifiPassword) > 0; }
   bool hasFolderUrl() const { return strlen(folderUrl) > 0; }
+  bool hasPinnedImage() const { return strlen(pinnedImageUrl) > 0; }
 };
