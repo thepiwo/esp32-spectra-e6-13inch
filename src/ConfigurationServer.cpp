@@ -1,5 +1,6 @@
 #include "ConfigurationServer.h"
 
+#include "FolderImageSource.h"
 #include <LittleFS.h>
 #include <WiFi.h>
 #include <WiFiAP.h>
@@ -141,6 +142,15 @@ void ConfigurationServer::setupWebServer() {
         this->handleUpload(request, filename, index, data, len, final);
       });
 
+  server->on("/api/folder-images", HTTP_GET,
+             [this](AsyncWebServerRequest *request) {
+               handleFolderImages(request);
+             });
+  server->on("/api/pin-image", HTTP_POST,
+             [this](AsyncWebServerRequest *request) {
+               handlePinImage(request);
+             });
+
   server->on("/clear", HTTP_POST, [this](AsyncWebServerRequest *request) {
     if (LittleFS.begin(true)) {
       const char *extensions[] = {".bmp", ".jpg", ".jpeg", ".png"};
@@ -196,6 +206,14 @@ void ConfigurationServer::handleSave(AsyncWebServerRequest *request) {
       config.sleepMinutes = request->getParam("sleepMinutes", true)->value().toInt();
     if (request->hasParam("imageChangeMinutes", true))
       config.imageChangeMinutes = request->getParam("imageChangeMinutes", true)->value().toInt();
+    if (request->hasParam("pinnedImageUrl", true))
+      config.pinnedImageUrl = request->getParam("pinnedImageUrl", true)->value();
+
+    // Auto-clear pin if folder URL changed
+    if (config.folderUrl != currentConfiguration.folderUrl) {
+      config.pinnedImageUrl = "";
+      Serial.println("Folder URL changed — pinned image cleared");
+    }
 
     Serial.println("Configuration received");
     request->send(200, "text/plain", "OK");
@@ -240,6 +258,7 @@ String ConfigurationServer::getConfigurationPage() {
   html.replace("{{CURRENT_PASSWORD}}", currentConfiguration.password);
   html.replace("{{CURRENT_IMAGE_URL}}", currentConfiguration.imageUrl);
   html.replace("{{CURRENT_FOLDER_URL}}", currentConfiguration.folderUrl);
+  html.replace("{{CURRENT_PINNED_IMAGE_URL}}", currentConfiguration.pinnedImageUrl);
 
   // Dithering dropdown
   uint8_t dm = currentConfiguration.ditherMode;
@@ -327,4 +346,63 @@ void ConfigurationServer::handleUpload(AsyncWebServerRequest *request,
       uploadFile.close();
     }
   }
+}
+
+void ConfigurationServer::handleFolderImages(AsyncWebServerRequest *request) {
+  String folderUrl = currentConfiguration.folderUrl;
+  if (folderUrl.length() == 0) {
+    request->send(400, "application/json",
+                  "{\"error\":\"No folder URL configured\"}");
+    return;
+  }
+
+  FolderImageSource folderSource;
+  String html = folderSource.fetchDirectoryListing(folderUrl);
+  if (html.length() == 0) {
+    request->send(502, "application/json",
+                  "{\"error\":\"Failed to fetch folder listing\"}");
+    return;
+  }
+
+  auto imageUrls = folderSource.parseImageLinks(html, folderUrl);
+
+  AsyncResponseStream *response =
+      request->beginResponseStream("application/json");
+  response->print("[");
+  for (size_t i = 0; i < imageUrls.size(); i++) {
+    if (i > 0)
+      response->print(",");
+    String url = imageUrls[i];
+    int lastSlash = url.lastIndexOf('/');
+    String name = (lastSlash >= 0) ? url.substring(lastSlash + 1) : url;
+    // Escape any quotes in name/url for valid JSON
+    name.replace("\"", "\\\"");
+    String escapedUrl = url;
+    escapedUrl.replace("\"", "\\\"");
+    response->printf("{\"name\":\"%s\",\"url\":\"%s\"}", name.c_str(),
+                     escapedUrl.c_str());
+  }
+  response->print("]");
+  request->send(response);
+}
+
+void ConfigurationServer::handlePinImage(AsyncWebServerRequest *request) {
+  String pinnedUrl = "";
+  if (request->hasParam("url", true)) {
+    pinnedUrl = request->getParam("url", true)->value();
+  }
+
+  currentConfiguration.pinnedImageUrl = pinnedUrl;
+
+  if (onPinCallback) {
+    onPinCallback(pinnedUrl);
+  }
+
+  if (pinnedUrl.length() > 0) {
+    Serial.printf("Image pinned: %s\n", pinnedUrl.c_str());
+  } else {
+    Serial.println("Image unpinned — cycling resumed");
+  }
+
+  request->send(200, "application/json", "{\"ok\":true}");
 }

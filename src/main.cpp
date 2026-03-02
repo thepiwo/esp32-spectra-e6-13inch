@@ -75,7 +75,9 @@ void setup() {
     printf("Timer wake-up detected.\r\n");
 
     // Advance folder image index if enough time has passed
-    if (appConfig->hasFolderUrl() && appConfig->sleepMinutes > 0) {
+    // Skip cycling when an image is pinned — pinned images don't rotate
+    if (appConfig->hasFolderUrl() && !appConfig->hasPinnedImage() &&
+        appConfig->sleepMinutes > 0) {
       wakesSinceImageChange++;
       bool shouldChange =
           (appConfig->imageChangeMinutes == 0) ||
@@ -92,6 +94,8 @@ void setup() {
                wakesSinceImageChange * appConfig->sleepMinutes,
                appConfig->imageChangeMinutes);
       }
+    } else if (appConfig->hasPinnedImage()) {
+      printf("Pinned image active — skipping cycling\r\n");
     }
   }
 
@@ -131,6 +135,7 @@ void setup() {
     if (!timerWake) {
       Configuration serverConfig(appConfig->wifiSSID, appConfig->wifiPassword,
                                  appConfig->imageUrl, appConfig->folderUrl,
+                                 appConfig->pinnedImageUrl,
                                  appConfig->ditherMode, appConfig->sleepMinutes,
                                  appConfig->imageChangeMinutes);
       ConfigurationServer server(serverConfig);
@@ -154,6 +159,8 @@ void setup() {
                     sizeof(appConfig->imageUrl) - 1);
             strncpy(appConfig->folderUrl, config.folderUrl.c_str(),
                     sizeof(appConfig->folderUrl) - 1);
+            strncpy(appConfig->pinnedImageUrl, config.pinnedImageUrl.c_str(),
+                    sizeof(appConfig->pinnedImageUrl) - 1);
             appConfig->ditherMode = config.ditherMode;
             appConfig->sleepMinutes = config.sleepMinutes;
             appConfig->imageChangeMinutes = config.imageChangeMinutes;
@@ -165,6 +172,13 @@ void setup() {
             }
           },
           useAP);
+
+      server.setOnPinCallback([](const String &pinnedUrl) {
+        strncpy(appConfig->pinnedImageUrl, pinnedUrl.c_str(),
+                sizeof(appConfig->pinnedImageUrl) - 1);
+        configStorage.save(*appConfig);
+        printf("Pinned image saved to NVS: %s\r\n", pinnedUrl.c_str());
+      });
 
       // Run web server for 10 minutes (600,000 ms)
       const unsigned long SERVER_TIMEOUT_MS = 10UL * 60UL * 1000UL;
@@ -199,7 +213,9 @@ void setup() {
     if (!timerWake) {
       printf("Starting Access Point mode...\r\n");
       Configuration serverConfig("", "", appConfig->imageUrl,
-                                 appConfig->folderUrl, appConfig->ditherMode,
+                                 appConfig->folderUrl,
+                                 appConfig->pinnedImageUrl,
+                                 appConfig->ditherMode,
                                  appConfig->sleepMinutes,
                                  appConfig->imageChangeMinutes);
       ConfigurationServer server(serverConfig);
@@ -215,6 +231,8 @@ void setup() {
                     sizeof(appConfig->imageUrl) - 1);
             strncpy(appConfig->folderUrl, config.folderUrl.c_str(),
                     sizeof(appConfig->folderUrl) - 1);
+            strncpy(appConfig->pinnedImageUrl, config.pinnedImageUrl.c_str(),
+                    sizeof(appConfig->pinnedImageUrl) - 1);
             appConfig->ditherMode = config.ditherMode;
             appConfig->sleepMinutes = config.sleepMinutes;
             appConfig->imageChangeMinutes = config.imageChangeMinutes;
@@ -224,6 +242,14 @@ void setup() {
             }
           },
           true);
+
+      server.setOnPinCallback([](const String &pinnedUrl) {
+        strncpy(appConfig->pinnedImageUrl, pinnedUrl.c_str(),
+                sizeof(appConfig->pinnedImageUrl) - 1);
+        configStorage.save(*appConfig);
+        printf("Pinned image saved to NVS (AP mode): %s\r\n",
+               pinnedUrl.c_str());
+      });
 
       // Run AP server for 10 minutes
       const unsigned long SERVER_TIMEOUT_MS = 10UL * 60UL * 1000UL;

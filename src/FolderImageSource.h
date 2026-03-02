@@ -16,8 +16,8 @@ public:
                                               uint16_t imageIndex,
                                               uint16_t &totalImages);
 
-private:
-  HttpDownloader downloader;
+  // Download a specific image by its full URL (used for pinned images)
+  std::unique_ptr<DownloadResult> fetchImageByUrl(const String &imageUrl);
 
   // Fetch an HTML directory listing page (accepts any content type)
   String fetchDirectoryListing(const String &url);
@@ -25,4 +25,7 @@ private:
   // Parse image file links from an HTML directory listing
   std::vector<String> parseImageLinks(const String &html,
                                        const String &baseUrl);
+
+private:
+  HttpDownloader downloader;
 };

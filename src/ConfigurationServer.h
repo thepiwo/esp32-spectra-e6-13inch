@@ -14,6 +14,7 @@ struct Configuration {
   String password;
   String imageUrl;
   String folderUrl;
+  String pinnedImageUrl;
   uint8_t ditherMode = 0;
   uint16_t sleepMinutes = 0;
   uint16_t imageChangeMinutes = 30;
@@ -22,14 +23,17 @@ struct Configuration {
 
   Configuration(const String &ssid, const String &password,
                 const String &imageUrl, const String &folderUrl = "",
+                const String &pinnedImageUrl = "",
                 uint8_t ditherMode = 0, uint16_t sleepMinutes = 0,
                 uint16_t imageChangeMinutes = 30)
       : ssid(ssid), password(password), imageUrl(imageUrl),
-        folderUrl(folderUrl), ditherMode(ditherMode),
-        sleepMinutes(sleepMinutes), imageChangeMinutes(imageChangeMinutes) {}
+        folderUrl(folderUrl), pinnedImageUrl(pinnedImageUrl),
+        ditherMode(ditherMode), sleepMinutes(sleepMinutes),
+        imageChangeMinutes(imageChangeMinutes) {}
 };
 
 using OnSaveCallback = std::function<void(const Configuration &config)>;
+using OnPinCallback = std::function<void(const String &pinnedImageUrl)>;
 
 class ConfigurationServer {
 public:
@@ -44,6 +48,8 @@ public:
 
   String getWifiAccessPointName() const;
   String getWifiAccessPointPassword() const;
+
+  void setOnPinCallback(OnPinCallback callback) { onPinCallback = callback; }
 
   // Returns true if a new image was uploaded since last check
   bool hasNewImage() const { return newImageUploaded; }
@@ -63,6 +69,7 @@ private:
 
   String htmlTemplate;
   OnSaveCallback onSaveCallback;
+  OnPinCallback onPinCallback;
 
   void setupWebServer();
   void setupDNSServer();
@@ -73,6 +80,8 @@ private:
   void handleNotFound(AsyncWebServerRequest *request);
   void handleUpload(AsyncWebServerRequest *request, const String &filename,
                     size_t index, uint8_t *data, size_t len, bool final);
+  void handleFolderImages(AsyncWebServerRequest *request);
+  void handlePinImage(AsyncWebServerRequest *request);
 };
 
 #endif
