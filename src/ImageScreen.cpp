@@ -51,71 +51,91 @@ static const RGBColor Spectra6Palette[] = {
     {0, 204, 0}      // 5: Green (00cc00)
 };
 
-static void scaleToFit(uint16_t *buffer, uint32_t srcW, uint32_t srcH) {
-  const uint32_t dstW = 1200;
-  const uint32_t dstH = 1600;
+static void scaleToFit(uint16_t *buffer, uint32_t srcW, uint32_t srcH,
+                       uint8_t scalingMode = 1) {
+  const int32_t dstW = 1200;
+  const int32_t dstH = 1600;
 
-  if (srcW == dstW && srcH == dstH)
+  // Cap source dimensions to actual buffer size (pngDrawCallback/jpgOutput
+  // already clip pixel writes to 1200x1600, so larger values would cause
+  // out-of-bounds reads in the scaling loops below).
+  if (srcW > (uint32_t)dstW)
+    srcW = dstW;
+  if (srcH > (uint32_t)dstH)
+    srcH = dstH;
+
+  if (srcW == (uint32_t)dstW && srcH == (uint32_t)dstH)
     return; // Already exact size, nothing to do
 
-  // Calculate scale to fit entire display (contain mode - preserves aspect
-  // ratio)
+  // Calculate scale to fit entire display
   float scaleX = (float)dstW / (float)srcW;
   float scaleY = (float)dstH / (float)srcH;
-  float scale = (scaleX < scaleY) ? scaleX : scaleY; // Use smaller scale to fit
 
-  uint32_t scaledW = (uint32_t)(srcW * scale);
-  uint32_t scaledH = (uint32_t)(srcH * scale);
-  if (scaledW > dstW)
-    scaledW = dstW;
-  if (scaledH > dstH)
-    scaledH = dstH;
+  float scale;
+  if (scalingMode == 1) {
+    scale = (scaleX > scaleY)
+                ? scaleX
+                : scaleY; // FILL: use larger scale to cover screen
+  } else {
+    scale = (scaleX < scaleY) ? scaleX
+                              : scaleY; // FIT: use smaller scale to letterbox
+  }
 
-  // Center the scaled image (letterbox or pillarbox)
-  uint32_t offsetX = (dstW - scaledW) / 2;
-  uint32_t offsetY = (dstH - scaledH) / 2;
+  int32_t scaledW = (int32_t)(srcW * scale);
+  int32_t scaledH = (int32_t)(srcH * scale);
 
-  Serial.printf("Scaling %dx%d -> %dx%d (scale=%.2f, offset=%d,%d)\n", srcW,
-                srcH, scaledW, scaledH, scale, offsetX, offsetY);
+  // Center the scaled image (can result in negative offsets for FILL)
+  int32_t offsetX = (dstW - scaledW) / 2;
+  int32_t offsetY = (dstH - scaledH) / 2;
+
+  Serial.printf("Scaling %dx%d -> %dx%d (scale=%.2f, offset=%d,%d, mode=%s)\n",
+                srcW, srcH, scaledW, scaledH, scale, offsetX, offsetY,
+                scalingMode == 1 ? "FILL" : "FIT");
 
   // 1. Horizontal Scale (In Place)
-  // For each row, we horizontally scale and center it within the 1200 pixel
-  // width.
+  // Extract bounded regions so we don't write outside the 1200px width buffer
+  int32_t dxStart = (offsetX < 0) ? -offsetX : 0;
+  int32_t dxEnd = (offsetX + scaledW > dstW) ? (dstW - offsetX) : scaledW;
+
   for (uint32_t y = 0; y < srcH; y++) {
     uint16_t rowBuf[1200];
     memcpy(rowBuf, &buffer[y * dstW], srcW * sizeof(uint16_t));
-    for (uint32_t x = 0; x < dstW; x++)
+    for (int32_t x = 0; x < dstW; x++)
       buffer[y * dstW + x] = 0xFFFF; // Clear back to white
-    for (uint32_t dx = 0; dx < scaledW; dx++) {
-      uint32_t srcX = dx * srcW / scaledW;
-      if (srcX >= srcW)
+
+    for (int32_t dx = dxStart; dx < dxEnd; dx++) {
+      int32_t srcX = dx * srcW / scaledW;
+      if (srcX >= (int32_t)srcW)
         srcX = srcW - 1;
       buffer[y * dstW + offsetX + dx] = rowBuf[srcX];
     }
   }
 
   // 2. Vertical Scale (In Place)
+  int32_t dyStart = (offsetY < 0) ? -offsetY : 0;
+  int32_t dyEnd = (offsetY + scaledH > dstH) ? (dstH - offsetY) : scaledH;
+
   // We map srcY (0 to srcH-1) to dstY (offsetY to offsetY + scaledH - 1)
-  // To avoid overwriting source rows before we read them, we analyze the
-  // overlap mapping direction.
+  // To avoid overwriting source rows before we read them, analyze overlap
+  // mapping direction.
   int32_t crossPoint = -1;
-  for (uint32_t dy = 0; dy < scaledH; dy++) {
+  for (int32_t dy = dyStart; dy < dyEnd; dy++) {
     uint32_t srcY = dy * srcH / scaledH;
-    uint32_t targetY = offsetY + dy;
-    if (targetY < srcY) {
+    int32_t targetY = offsetY + dy;
+    if (targetY < (int32_t)srcY) {
       crossPoint = dy;
-      break; // First point where target skips above source
+      break;
     }
   }
 
   // Bottom-up for the top half (where targetY >= srcY)
-  int32_t limitBottomUp = (crossPoint == -1) ? (scaledH - 1) : (crossPoint - 1);
-  for (int32_t dy = limitBottomUp; dy >= 0; dy--) {
+  int32_t limitBottomUp = (crossPoint == -1) ? (dyEnd - 1) : (crossPoint - 1);
+  for (int32_t dy = limitBottomUp; dy >= dyStart; dy--) {
     uint32_t srcY = dy * srcH / scaledH;
     if (srcY >= srcH)
       srcY = srcH - 1;
-    uint32_t targetY = offsetY + dy;
-    if (targetY != srcY) {
+    int32_t targetY = offsetY + dy;
+    if (targetY != (int32_t)srcY) {
       memcpy(&buffer[targetY * dstW], &buffer[srcY * dstW],
              dstW * sizeof(uint16_t));
     }
@@ -123,22 +143,31 @@ static void scaleToFit(uint16_t *buffer, uint32_t srcW, uint32_t srcH) {
 
   // Top-down for the bottom half (where targetY < srcY)
   if (crossPoint != -1) {
-    for (uint32_t dy = crossPoint; dy < scaledH; dy++) {
+    for (int32_t dy = crossPoint; dy < dyEnd; dy++) {
       uint32_t srcY = dy * srcH / scaledH;
       if (srcY >= srcH)
         srcY = srcH - 1;
-      uint32_t targetY = offsetY + dy;
-      if (targetY != srcY) {
+      int32_t targetY = offsetY + dy;
+      if (targetY != (int32_t)srcY) {
         memcpy(&buffer[targetY * dstW], &buffer[srcY * dstW],
                dstW * sizeof(uint16_t));
       }
     }
   }
 
-  // 3. Fill the vertical letterbox areas with white
-  for (uint32_t y = 0; y < offsetY; y++) {
-    for (uint32_t x = 0; x < dstW; x++)
-      buffer[y * dstW + x] = 0xFFFF;
+  // 3. Fill the vertical letterbox areas with white (only applies for FIT mode)
+  if (offsetY > 0) {
+    for (int32_t y = 0; y < offsetY; y++) {
+      for (int32_t x = 0; x < dstW; x++)
+        buffer[y * dstW + x] = 0xFFFF;
+    }
+  }
+
+  if (offsetY + scaledH < dstH) {
+    for (int32_t y = offsetY + scaledH; y < dstH; y++) {
+      for (int32_t x = 0; x < dstW; x++)
+        buffer[y * dstW + x] = 0xFFFF;
+    }
   }
   for (uint32_t y = offsetY + scaledH; y < dstH; y++) {
     for (uint32_t x = 0; x < dstW; x++)
@@ -479,9 +508,8 @@ bool ImageScreen::jpgOutput(int16_t x, int16_t y, uint16_t w, uint16_t h,
   return true;
 }
 
-std::unique_ptr<ColorImageBitmaps>
-ImageScreen::decodeJPG(uint8_t *data, size_t dataSize,
-                       uint8_t **freeAfterDecode) {
+std::unique_ptr<ColorImageBitmaps> ImageScreen::decodeJPG(uint8_t *data,
+                                                          size_t dataSize) {
   Serial.println("Decoding JPEG...");
   jpgRgb565Buffer = (uint16_t *)ps_malloc(1200 * 1600 * 2);
   if (!jpgRgb565Buffer) {
@@ -515,16 +543,11 @@ ImageScreen::decodeJPG(uint8_t *data, size_t dataSize,
     return nullptr;
   }
 
-  // Free source data NOW to reclaim PSRAM before dithering
-  if (freeAfterDecode && *freeAfterDecode) {
-    Serial.printf("Freeing source buffer to reclaim PSRAM\n");
-    free(*freeAfterDecode);
-    *freeAfterDecode = nullptr;
-  }
+  // Memory is automatically managed by the DownloadResult destructor
 
   // Scale all images that don't exactly match the display to fit
   if (w != 1200 || h != 1600) {
-    scaleToFit(jpgRgb565Buffer, w, h);
+    scaleToFit(jpgRgb565Buffer, w, h, config.scalingMode);
   }
 
   auto bitmaps = ditherImage(jpgRgb565Buffer, 1200, 1600);
@@ -629,7 +652,7 @@ std::unique_ptr<ColorImageBitmaps> ImageScreen::decodePNG(File &file) {
 
   // Scale all images that don't exactly match the display to fit
   if (imgW != 1200 || imgH != 1600) {
-    scaleToFit(pngRgb565Buffer, imgW, imgH);
+    scaleToFit(pngRgb565Buffer, imgW, imgH, config.scalingMode);
   }
 
   auto bitmaps = ditherImage(pngRgb565Buffer, 1200, 1600);
@@ -677,7 +700,7 @@ std::unique_ptr<ColorImageBitmaps> ImageScreen::decodePNG(uint8_t *data,
 
   // Scale all images that don't exactly match the display to fit
   if (pngW != 1200 || pngH != 1600) {
-    scaleToFit(pngRgb565Buffer, pngW, pngH);
+    scaleToFit(pngRgb565Buffer, pngW, pngH, config.scalingMode);
   }
 
   auto bitmaps = ditherImage(pngRgb565Buffer, 1200, 1600);
@@ -787,14 +810,131 @@ std::unique_ptr<ColorImageBitmaps> ImageScreen::decodeBMP(uint8_t *data,
 }
 
 std::unique_ptr<ColorImageBitmaps>
-ImageScreen::processImageData(uint8_t *data, size_t dataSize,
-                              uint8_t **freeAfterDecode) {
+ImageScreen::decodeJPG(const String &filename) {
+  Serial.println("Decoding JPEG (Streaming from LittleFS)...");
+  jpgRgb565Buffer = (uint16_t *)ps_malloc(1200 * 1600 * 2);
+  if (!jpgRgb565Buffer) {
+    Serial.println("Failed to allocate PSRAM for JPEG RGB565 buffer");
+    return nullptr;
+  }
+  memset(jpgRgb565Buffer, 0xFFFF, 1200 * 1600 * 2); // White background
+
+  TJpgDec.setJpgScale(1);
+  TJpgDec.setCallback(jpgOutput);
+
+  uint16_t w = 0, h = 0;
+  fs::File file = LittleFS.open(filename, FILE_READ);
+  if (!file) {
+    Serial.println("Failed to open file for JPEG decode");
+    free(jpgRgb565Buffer);
+    return nullptr;
+  }
+  TJpgDec.getFsJpgSize(&w, &h, file);
+  file.close();
+
+  uint8_t scale = 1;
+  while ((w / scale > 1200) || (h / scale > 1600)) {
+    if (scale == 8)
+      break;
+    scale *= 2;
+  }
+  TJpgDec.setJpgScale(scale);
+  Serial.printf("JPEG Original Size: %dx%d, Pre-scaling: 1/%d\n", w, h, scale);
+  w /= scale;
+  h /= scale;
+
+  file = LittleFS.open(filename, FILE_READ);
+  if (TJpgDec.drawFsJpg(0, 0, file) != 0) {
+    Serial.println("JPEG decode failed");
+    file.close();
+    free(jpgRgb565Buffer);
+    return nullptr;
+  }
+  file.close();
+
+  // Scale all images that don't exactly match the display to fit
+  if (w != 1200 || h != 1600) {
+    scaleToFit(jpgRgb565Buffer, w, h, config.scalingMode);
+  }
+
+  auto bitmaps = ditherImage(jpgRgb565Buffer, 1200, 1600);
+  free(jpgRgb565Buffer);
+  return bitmaps;
+}
+
+std::unique_ptr<ColorImageBitmaps> ImageScreen::processImageFile(File &file) {
+  uint8_t header[4];
+  file.seek(0);
+  file.read(header, 4);
+  file.seek(0);
+
+  String filename = file.name();
+  if (!filename.startsWith("/")) {
+    filename = "/" + filename;
+  }
+
+  file.close(); // Close file so TJpgDec can open it
+
+  if (header[0] == 0xFF && header[1] == 0xD8) {
+    return decodeJPG(filename);
+  } else if (header[0] == 0x89 && header[1] == 'P' && header[2] == 'N' &&
+             header[3] == 'G') {
+    File reopenFile = LittleFS.open(filename, FILE_READ);
+    auto bitmaps = decodePNG(reopenFile);
+    reopenFile.close();
+    return bitmaps;
+  } else if (header[0] == 'B' && header[1] == 'M') {
+    // BMP fallback to PSRAM
+    File reopenFile = LittleFS.open(filename, FILE_READ);
+    size_t fileSize = reopenFile.size();
+    uint8_t *fileBuffer = (uint8_t *)ps_malloc(fileSize);
+    if (!fileBuffer) {
+      reopenFile.close();
+      return nullptr;
+    }
+    reopenFile.read(fileBuffer, fileSize);
+    reopenFile.close();
+    auto bitmaps = decodeBMP(fileBuffer, fileSize);
+    free(fileBuffer);
+    return bitmaps;
+  }
+
+  Serial.println("Unknown Image format in file");
+  return nullptr;
+}
+
+std::unique_ptr<ColorImageBitmaps>
+ImageScreen::processImageData(uint8_t *data, size_t dataSize) {
   if (dataSize < 4)
     return nullptr;
 
+  if (dataSize > 1.5 * 1024 * 1024) { // over 1.5MB
+    Serial.println("Image too large for PSRAM decoding. Temporarily caching to "
+                   "LittleFS...");
+
+    // Ensure LittleFS is mounted before attempting to write cache
+    LittleFS.begin(true);
+
+    fs::File tempFile = LittleFS.open("/large_temp.img", FILE_WRITE);
+    if (tempFile) {
+      tempFile.write(data, dataSize);
+      tempFile.close();
+
+      // Memory is automatically managed by the DownloadResult destructor
+
+      tempFile = LittleFS.open("/large_temp.img", FILE_READ);
+      auto bitmaps = processImageFile(tempFile);
+      tempFile.close();
+      LittleFS.remove("/large_temp.img");
+      return bitmaps;
+    }
+    Serial.println(
+        "Failed to cache to LittleFS, attempting direct RAM decode anyway...");
+  }
+
   // Manual format detection
   if (data[0] == 0xFF && data[1] == 0xD8) {
-    return decodeJPG(data, dataSize, freeAfterDecode);
+    return decodeJPG(data, dataSize);
   } else if (data[0] == 0x89 && data[1] == 'P' && data[2] == 'N' &&
              data[3] == 'G') {
     return decodePNG(data, dataSize);
@@ -863,41 +1003,12 @@ std::unique_ptr<ColorImageBitmaps> ImageScreen::loadFromLittleFS() {
     return nullptr;
   }
 
-  if (filename.endsWith(".png")) {
-    printf("Streaming PNG image directly from LittleFS to "
-           "processImageData...\r\n");
-    auto bitmaps = decodePNG(file);
-    file.close();
-    return bitmaps;
-  }
+  printf("Found %s (Size: %d bytes). Streaming directly to "
+         "processImageFile...\r\n",
+         filename.c_str(), file.size());
 
-  size_t fileSize = file.size();
-  printf("Found %s (Size: %d bytes). Loading into PSRAM...\r\n",
-         filename.c_str(), fileSize);
-
-  uint8_t *fileBuffer = (uint8_t *)ps_malloc(fileSize);
-  if (!fileBuffer) {
-    printf("Failed to allocate %d bytes in PSRAM for LittleFS image.\r\n",
-           fileSize);
-    file.close();
-    return nullptr;
-  }
-
-  size_t bytesRead = file.read(fileBuffer, fileSize);
+  auto bitmaps = processImageFile(file);
   file.close();
-
-  if (bytesRead != fileSize) {
-    printf("Warning: Read %d bytes, expected %d bytes\r\n", bytesRead,
-           fileSize);
-  }
-
-  printf("Passing local LittleFS image to processImageData...\r\n");
-  auto bitmaps = processImageData(fileBuffer, bytesRead, &fileBuffer);
-
-  // fileBuffer may have been freed by decodeJPG already
-  if (fileBuffer) {
-    free(fileBuffer);
-  }
 
   return bitmaps;
 }
@@ -909,9 +1020,11 @@ std::unique_ptr<ColorImageBitmaps> ImageScreen::loadFromFolder() {
     FolderImageSource folderSource;
     auto result = folderSource.fetchImageByUrl(String(config.pinnedImageUrl));
     if (result && result->httpCode == HTTP_CODE_OK && result->data) {
-      Serial.printf("Folder: processing pinned image (%d bytes)\n", result->size);
-      auto bitmaps = processImageData(result->data, result->size, &result->data);
-      if (bitmaps) return bitmaps;
+      Serial.printf("Folder: processing pinned image (%d bytes)\n",
+                    result->size);
+      auto bitmaps = processImageData(result->data, result->size);
+      if (bitmaps)
+        return bitmaps;
     }
     Serial.println("Folder: pinned image failed, falling back to cycling");
   }
@@ -929,7 +1042,7 @@ std::unique_ptr<ColorImageBitmaps> ImageScreen::loadFromFolder() {
   }
 
   printf("Folder: processing image (%d bytes)\r\n", result->size);
-  return processImageData(result->data, result->size, &result->data);
+  return processImageData(result->data, result->size);
 }
 
 void ImageScreen::render() {
@@ -940,8 +1053,18 @@ void ImageScreen::render() {
 
   LittleFS.begin(true);
 
+  std::unique_ptr<ColorImageBitmaps> bitmaps = nullptr;
+
+  // Priority 0: Pinned image (user explicitly chose this image)
+  if (config.hasPinnedImage() && config.hasFolderUrl()) {
+    Serial.println("Loading pinned image (highest priority)...");
+    bitmaps = loadFromFolder(); // loadFromFolder checks pinned first
+  }
+
   // Priority 1: Local uploaded image (from web upload or SD card copy)
-  auto bitmaps = loadFromLittleFS();
+  if (!bitmaps) {
+    bitmaps = loadFromLittleFS();
+  }
 
   // Priority 2: Folder URL — cycle through images in order
   if (!bitmaps && config.hasFolderUrl()) {
@@ -974,8 +1097,9 @@ void ImageScreen::render() {
   }
 
   renderBitmaps(*bitmaps);
-  displayBatteryStatus();
-  displayWifiInfo();
+  // Stats removed — clean image only
+  // displayBatteryStatus();
+  // displayWifiInfo();
 
   display.display();
   display.hibernate();

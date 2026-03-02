@@ -26,8 +26,12 @@ void initializeDefaultConfig() {
   std::unique_ptr<ApplicationConfig> storedConfig = configStorage.load();
   if (storedConfig) {
     appConfig = std::move(storedConfig);
+    // Force FILL mode — user can change via web UI if needed
+    appConfig->scalingMode = SCALE_FILL;
     printf("Configuration loaded from persistent storage: \r\n");
     printf("  - WiFi SSID: %s\n", appConfig->wifiSSID);
+    printf("  - Scaling mode: %s\n",
+           appConfig->scalingMode == SCALE_FILL ? "FILL" : "FIT");
   } else {
     appConfig.reset(new ApplicationConfig());
     printf("Using default configuration (no stored config found) \r\n");
@@ -133,11 +137,11 @@ void setup() {
 
     // --- Web Server Phase (skip on timer wake for fast sleep cycling) ---
     if (!timerWake) {
-      Configuration serverConfig(appConfig->wifiSSID, appConfig->wifiPassword,
-                                 appConfig->imageUrl, appConfig->folderUrl,
-                                 appConfig->pinnedImageUrl,
-                                 appConfig->ditherMode, appConfig->sleepMinutes,
-                                 appConfig->imageChangeMinutes);
+      Configuration serverConfig(
+          appConfig->wifiSSID, appConfig->wifiPassword, appConfig->imageUrl,
+          appConfig->folderUrl, appConfig->pinnedImageUrl,
+          appConfig->ditherMode, appConfig->scalingMode,
+          appConfig->sleepMinutes, appConfig->imageChangeMinutes);
       ConfigurationServer server(serverConfig);
 
       bool useAP = !wifi.isConnected();
@@ -162,6 +166,7 @@ void setup() {
             strncpy(appConfig->pinnedImageUrl, config.pinnedImageUrl.c_str(),
                     sizeof(appConfig->pinnedImageUrl) - 1);
             appConfig->ditherMode = config.ditherMode;
+            appConfig->scalingMode = config.scalingMode;
             appConfig->sleepMinutes = config.sleepMinutes;
             appConfig->imageChangeMinutes = config.imageChangeMinutes;
 
@@ -197,6 +202,13 @@ void setup() {
           printf("Display refreshed with new image.\r\n");
         }
 
+        if (server.isRefreshRequested()) {
+          server.clearRefreshRequest();
+          printf("Display refresh requested! Refreshing...\r\n");
+          displayCurrentScreen(wifi.isConnected());
+          printf("Display refreshed.\r\n");
+        }
+
         delay(10);
       }
 
@@ -212,12 +224,11 @@ void setup() {
 
     if (!timerWake) {
       printf("Starting Access Point mode...\r\n");
-      Configuration serverConfig("", "", appConfig->imageUrl,
-                                 appConfig->folderUrl,
-                                 appConfig->pinnedImageUrl,
-                                 appConfig->ditherMode,
-                                 appConfig->sleepMinutes,
-                                 appConfig->imageChangeMinutes);
+      Configuration serverConfig(
+          "", "", appConfig->imageUrl, appConfig->folderUrl,
+          appConfig->pinnedImageUrl, appConfig->ditherMode,
+          appConfig->scalingMode, appConfig->sleepMinutes,
+          appConfig->imageChangeMinutes);
       ConfigurationServer server(serverConfig);
       server.run(
           [](const Configuration &config) {
@@ -234,6 +245,7 @@ void setup() {
             strncpy(appConfig->pinnedImageUrl, config.pinnedImageUrl.c_str(),
                     sizeof(appConfig->pinnedImageUrl) - 1);
             appConfig->ditherMode = config.ditherMode;
+            appConfig->scalingMode = config.scalingMode;
             appConfig->sleepMinutes = config.sleepMinutes;
             appConfig->imageChangeMinutes = config.imageChangeMinutes;
 
@@ -266,6 +278,13 @@ void setup() {
           printf("Display refreshed with new image.\r\n");
         }
 
+        if (server.isRefreshRequested()) {
+          server.clearRefreshRequest();
+          printf("Display refresh requested (AP)! Refreshing...\r\n");
+          displayCurrentScreen(false);
+          printf("Display refreshed.\r\n");
+        }
+
         delay(10);
       }
 
@@ -275,8 +294,7 @@ void setup() {
 
   // --- Deep Sleep ---
   if (appConfig->sleepMinutes > 0) {
-    uint64_t sleepUs =
-        (uint64_t)appConfig->sleepMinutes * 60ULL * 1000000ULL;
+    uint64_t sleepUs = (uint64_t)appConfig->sleepMinutes * 60ULL * 1000000ULL;
     esp_sleep_enable_timer_wakeup(sleepUs);
     printf("Timed deep sleep for %d minutes. Device will wake "
            "automatically.\r\n",
