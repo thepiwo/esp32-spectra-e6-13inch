@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>E-Ink Display Setup</title>
+    <title>E-Ink Photo Frame</title>
     <style>
         * {
             box-sizing: border-box;
@@ -356,7 +356,7 @@
 
 <body>
     <div class="container">
-        <h1>E-Ink Display Setup</h1>
+        <h1>E-Ink Photo Frame</h1>
 
         <div id="status" class="status"></div>
 
@@ -449,6 +449,7 @@
                 <label for="imageChangeMinutes">Change Image Every</label>
                 <select id="imageChangeMinutes" name="imageChangeMinutes">
                     <option value="0" {{IMG_CHG_SEL_0}}>Every wake</option>
+                    <option value="1" {{IMG_CHG_SEL_1}}>1 minute</option>
                     <option value="15" {{IMG_CHG_SEL_15}}>15 minutes</option>
                     <option value="30" {{IMG_CHG_SEL_30}}>30 minutes</option>
                     <option value="60" {{IMG_CHG_SEL_60}}>1 hour</option>

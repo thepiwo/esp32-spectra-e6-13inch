@@ -97,8 +97,14 @@ static void scaleToFit(uint16_t *buffer, uint32_t srcW, uint32_t srcH,
   int32_t dxStart = (offsetX < 0) ? -offsetX : 0;
   int32_t dxEnd = (offsetX + scaledW > dstW) ? (dstW - offsetX) : scaledW;
 
+  // Allocate row buffer on heap to avoid 2400-byte stack allocation
+  uint16_t *rowBuf = (uint16_t *)malloc(1200 * sizeof(uint16_t));
+  if (!rowBuf) {
+    Serial.println("Failed to allocate row buffer for scaling");
+    return;
+  }
+
   for (uint32_t y = 0; y < srcH; y++) {
-    uint16_t rowBuf[1200];
     memcpy(rowBuf, &buffer[y * dstW], srcW * sizeof(uint16_t));
     for (int32_t x = 0; x < dstW; x++)
       buffer[y * dstW + x] = 0xFFFF; // Clear back to white
@@ -110,6 +116,8 @@ static void scaleToFit(uint16_t *buffer, uint32_t srcW, uint32_t srcH,
       buffer[y * dstW + offsetX + dx] = rowBuf[srcX];
     }
   }
+
+  free(rowBuf);
 
   // 2. Vertical Scale (In Place)
   int32_t dyStart = (offsetY < 0) ? -offsetY : 0;
@@ -521,19 +529,22 @@ std::unique_ptr<ColorImageBitmaps> ImageScreen::decodeJPG(uint8_t *data,
   }
   memset(jpgRgb565Buffer, 0xFFFF, 1200 * 1600 * 2); // White background
 
-  JPEGDEC jpg;
-  if (!jpg.openRAM(data, dataSize, JPEGDraw)) {
+  // Allocate JPEGDEC on the heap to prevent stack overflow!
+  // (JPEGDEC internal state is very large — tens of KB)
+  JPEGDEC *jpg = new JPEGDEC();
+  if (!jpg->openRAM(data, dataSize, JPEGDraw)) {
     Serial.println("JPEG Error: Failed to open from RAM");
     if (dataSize >= 4) {
       Serial.printf("Buffer Header: %02X %02X %02X %02X\n", data[0], data[1],
                     data[2], data[3]);
     }
     free(jpgRgb565Buffer);
+    delete jpg;
     return nullptr;
   }
 
-  int w = jpg.getWidth();
-  int h = jpg.getHeight();
+  int w = jpg->getWidth();
+  int h = jpg->getHeight();
 
   // Calculate scale factor to reduce PSRAM allocation for huge images
   // JPEGDEC supports scaling down by 1, 2, 4, or 8 (using JPEG_SCALE_X)
@@ -559,12 +570,14 @@ std::unique_ptr<ColorImageBitmaps> ImageScreen::decodeJPG(uint8_t *data,
   w /= scale;
   h /= scale;
 
-  if (!jpg.decode(0, 0, decode_options)) {
+  if (!jpg->decode(0, 0, decode_options)) {
     Serial.println("JPEG decode failed");
     free(jpgRgb565Buffer);
+    delete jpg;
     return nullptr;
   }
-  jpg.close();
+  jpg->close();
+  delete jpg;
 
   // Scale all images that don't exactly match the display to fit
   if (w != 1200 || h != 1600) {
@@ -588,8 +601,8 @@ static int pngDrawCallback(PNGDRAW *pDraw) {
   int srcWidth = pDraw->iWidth;
   int copyWidth = (srcWidth > 1200) ? 1200 : srcWidth;
 
-  // Allocate temp buffer on stack for one row (max 2400px = 4800 bytes)
-  uint16_t tempLine[2400];
+  // Static buffer to avoid 4800-byte stack allocation in this callback
+  static uint16_t tempLine[2400];
   PNG *png = (PNG *)pDraw->pUser;
   png->getLineAsRGB565(pDraw, tempLine, PNG_RGB565_LITTLE_ENDIAN, 0xFFFFFFFF);
 

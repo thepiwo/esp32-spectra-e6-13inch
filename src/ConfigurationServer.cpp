@@ -291,6 +291,7 @@ String ConfigurationServer::getConfigurationPage() {
   // Image change interval dropdown
   uint16_t ic = currentConfiguration.imageChangeMinutes;
   setSelected(html, "{{IMG_CHG_SEL_0}}", ic == 0);
+  setSelected(html, "{{IMG_CHG_SEL_1}}", ic == 1);
   setSelected(html, "{{IMG_CHG_SEL_15}}", ic == 15);
   setSelected(html, "{{IMG_CHG_SEL_30}}", ic == 30);
   setSelected(html, "{{IMG_CHG_SEL_60}}", ic == 60);

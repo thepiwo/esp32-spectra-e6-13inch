@@ -54,7 +54,7 @@ struct ApplicationConfig {
     ditherMode = DITHER_FLOYD_STEINBERG;
     scalingMode = SCALE_FIT; // Default to fit/letterbox (preserve entire image)
     sleepMinutes = 0;
-    imageChangeMinutes = 30;
+    imageChangeMinutes = 1;
   }
 
   bool hasValidWiFiCredentials() const {
