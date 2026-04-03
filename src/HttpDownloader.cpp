@@ -64,7 +64,8 @@ HttpDownloader::download(const String &url, const String &cachedETag) {
 
   contentType.toLowerCase();
   if (!contentType.isEmpty() && contentType.indexOf("image") == -1 &&
-      contentType.indexOf("text/html") == -1) {
+      contentType.indexOf("text/html") == -1 &&
+      contentType.indexOf("application/octet-stream") == -1) {
     Serial.println("Unexpected content type: " + contentType);
     http.end();
     result->httpCode = -1;

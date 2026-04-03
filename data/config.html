@@ -67,6 +67,7 @@
         }
 
         input[type="text"],
+        input[type="number"],
         input[type="password"] {
             width: 100%;
             padding: 16px;
@@ -104,6 +105,7 @@
         }
 
         input[type="text"]:focus,
+        input[type="number"]:focus,
         input[type="password"]:focus,
         select:focus {
             border-color: #3b82f6;
@@ -113,6 +115,7 @@
         }
 
         input[type="text"]::placeholder,
+        input[type="number"]::placeholder,
         input[type="password"]::placeholder {
             color: #9ca3af;
         }
@@ -200,6 +203,7 @@
             }
 
             input[type="text"],
+            input[type="number"],
             input[type="password"] {
                 padding: 15px;
                 min-height: 50px;
@@ -262,6 +266,7 @@
             }
 
             input[type="text"],
+            input[type="number"],
             input[type="password"] {
                 background-color: rgba(51, 65, 85, 0.5);
                 border-color: #475569;
@@ -275,6 +280,7 @@
             }
 
             input[type="text"]:focus,
+            input[type="number"]:focus,
             input[type="password"]:focus {
                 border-color: #60a5fa;
                 background-color: rgba(51, 65, 85, 0.7);
@@ -286,6 +292,7 @@
             }
 
             input[type="text"]::placeholder,
+            input[type="number"]::placeholder,
             input[type="password"]::placeholder {
                 color: #64748b;
             }
@@ -423,7 +430,7 @@
 
             <hr style="border: 0; border-top: 1px solid rgba(0,0,0,0.1); margin: 24px 0;">
 
-            <div class="form-group">
+            <div class="form-group" id="ditherGroup">
                 <label for="ditherMode">Dithering Algorithm</label>
                 <select id="ditherMode" name="ditherMode">
                     <option value="0" {{DITHER_SEL_0}}>Floyd-Steinberg (smooth gradients)</option>
@@ -431,6 +438,13 @@
                     <option value="2" {{DITHER_SEL_2}}>Ordered / Bayer (crosshatch pattern)</option>
                     <option value="3" {{DITHER_SEL_3}}>None (flat nearest colour)</option>
                 </select>
+            </div>
+
+            <div id="spectra6Note" style="display:none;" class="form-group">
+                <small style="color: #6b7280; font-size: 13px; display: block; padding: 12px;
+                    background: rgba(99,102,241,0.08); border-radius: 8px; border: 1px solid rgba(99,102,241,0.2);">
+                    Pre-dithered .spectra6 file — dithering mode is not applied on device.
+                </small>
             </div>
 
             <div class="form-group">
@@ -473,6 +487,33 @@
                     <option value="720" {{SLEEP_SEL_720}}>12 hours</option>
                     <option value="1440" {{SLEEP_SEL_1440}}>24 hours</option>
                 </select>
+            </div>
+
+            <hr style="border: 0; border-top: 1px solid rgba(0,0,0,0.1); margin: 24px 0;">
+
+            <div class="form-group">
+                <label for="utcOffsetHours">UTC Offset (hours)</label>
+                <input type="number" id="utcOffsetHours" name="utc_offset_hours"
+                    min="-12" max="14" value="{{CURRENT_UTC_OFFSET}}">
+                <small style="color: #6b7280; font-size: 12px; margin-top: 4px; display: block;">
+                    Your timezone offset from UTC. E.g. +1 for CET, -5 for EST.
+                </small>
+            </div>
+
+            <div class="form-group">
+                <label for="quietHoursStart">Quiet From (hour, 0–23)</label>
+                <input type="number" id="quietHoursStart" name="quiet_hours_start"
+                    min="0" max="23" value="{{CURRENT_QUIET_START}}">
+            </div>
+
+            <div class="form-group">
+                <label for="quietHoursEnd">Quiet Until (hour, 0–23)</label>
+                <input type="number" id="quietHoursEnd" name="quiet_hours_end"
+                    min="0" max="23" value="{{CURRENT_QUIET_END}}">
+                <small style="color: #6b7280; font-size: 12px; margin-top: 4px; display: block;">
+                    Set both to the same value to disable. Midnight-spanning ranges work (e.g. 23 → 8).
+                    Requires WiFi — quiet hours are skipped if the device cannot reach NTP.
+                </small>
             </div>
 
             <button type="submit" class="btn" id="submitBtn">Save Configuration</button>
@@ -542,6 +583,9 @@
                 formData.append('imageChangeMinutes', imageChangeMinutes);
                 formData.append('sleepMinutes', sleepMinutes);
                 formData.append('pinnedImageUrl', document.getElementById('pinnedImageUrl').value);
+                formData.append('utc_offset_hours', document.getElementById('utcOffsetHours').value);
+                formData.append('quiet_hours_start', document.getElementById('quietHoursStart').value);
+                formData.append('quiet_hours_end', document.getElementById('quietHoursEnd').value);
 
                 const response = await fetch('/save', {
                     method: 'POST',
@@ -778,6 +822,19 @@
                 statusDiv.style.display = 'flex';
             }
         });
+
+        // --- Spectra6 dithering hide/show ---
+        function checkSpectra6() {
+            var imageUrl = document.getElementById('imageUrl').value;
+            var folderUrl = document.getElementById('folderUrl').value;
+            var isSpectra6 = imageUrl.toLowerCase().endsWith('.spectra6') ||
+                             folderUrl.toLowerCase().endsWith('.spectra6');
+            document.getElementById('ditherGroup').style.display = isSpectra6 ? 'none' : '';
+            document.getElementById('spectra6Note').style.display = isSpectra6 ? '' : 'none';
+        }
+        document.getElementById('imageUrl').addEventListener('input', checkSpectra6);
+        document.getElementById('folderUrl').addEventListener('input', checkSpectra6);
+        checkSpectra6();
 
         // --- Change Image Now ---
         document.getElementById('refreshBtn').addEventListener('click', async function () {

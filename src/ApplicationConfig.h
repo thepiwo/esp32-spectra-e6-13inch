@@ -37,6 +37,9 @@ struct ApplicationConfig {
       sleepMinutes; // 0 = no timed wake (permanent sleep after server timeout)
   uint16_t imageChangeMinutes; // How often to advance to the next image (0 =
                                // every wake)
+  uint8_t quietHoursStart;  // 0-23, local hour quiet period begins (== end = disabled)
+  uint8_t quietHoursEnd;    // 0-23, local hour quiet period ends
+  int8_t  utcOffsetHours;   // UTC offset -12 to +14 for local time via NTP
 
   static const int DISPLAY_ROTATION = 2;
 
@@ -55,6 +58,9 @@ struct ApplicationConfig {
     scalingMode = SCALE_FIT; // Default to fit/letterbox (preserve entire image)
     sleepMinutes = 0;
     imageChangeMinutes = 1;
+    quietHoursStart = 0;
+    quietHoursEnd   = 0;
+    utcOffsetHours  = 0;
   }
 
   bool hasValidWiFiCredentials() const {

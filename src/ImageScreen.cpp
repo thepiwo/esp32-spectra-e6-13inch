@@ -770,40 +770,6 @@ std::unique_ptr<ColorImageBitmaps> ImageScreen::decodeBMP(uint8_t *data,
   uint32_t imageHeight = bmpHeader[22] | (bmpHeader[23] << 8) |
                          (bmpHeader[24] << 16) | (bmpHeader[25] << 24);
   uint16_t bitsPerPixel = bmpHeader[28] | (bmpHeader[29] << 8);
-  uint32_t compression = bmpHeader[30] | (bmpHeader[31] << 8) |
-                         (bmpHeader[32] << 16) | (bmpHeader[33] << 24);
-
-  // If it's a standard 8-bit BMP (like from's dither tool), we handle it
-  // specifically
-  if (bitsPerPixel == 8 && compression == 0) {
-    // (Old logic for pre-dithered BMPs)
-    uint32_t paletteSize = 256 * 4;
-    dataIndex += paletteSize;
-    if (dataOffset > dataIndex)
-      dataIndex += (dataOffset - dataIndex);
-
-    uint32_t rowSize = ((imageWidth * bitsPerPixel + 31) / 32) * 4;
-    uint8_t *rowBuffer = new uint8_t[rowSize];
-    uint8_t *pixelBuffer = (uint8_t *)ps_malloc(imageWidth * imageHeight);
-
-    for (int y = imageHeight - 1; y >= 0; y--) {
-      memcpy(rowBuffer, data + dataIndex, rowSize);
-      dataIndex += rowSize;
-      for (int x = 0; x < imageWidth; x++) {
-        pixelBuffer[((imageHeight - 1) - y) * imageWidth + x] = rowBuffer[x];
-      }
-    }
-    delete[] rowBuffer;
-
-    // Convert mapping logic... wait, if it's already dithered to indices 0-5,
-    // we can just map them.
-    // But for native BMP support (random 24bit BMP), we should decode to
-    // RGB888.
-  }
-
-  // FALLBACK: For non-8bit BMP or generic BMP, we should ideally decode to
-  // RGB888. For now, let's assume if it starts with 'BM' and isn't our special
-  // 8bit, we might need a BMP library or just simple 24bit parsing.
 
   if (bitsPerPixel == 24) {
     Serial.println("Decoding 24-bit BMP...");
@@ -841,6 +807,51 @@ std::unique_ptr<ColorImageBitmaps> ImageScreen::decodeBMP(uint8_t *data,
   }
 
   return nullptr; // Unsupported BMP format
+}
+
+std::unique_ptr<ColorImageBitmaps>
+ImageScreen::decodeSpectra6(uint8_t *data, size_t dataSize) {
+  // Validate magic
+  if (dataSize < 16 || memcmp(data, "SPECTRA6", 8) != 0) {
+    Serial.println("Spectra6: invalid magic");
+    return nullptr;
+  }
+
+  // Read dimensions (little-endian uint32)
+  uint32_t width  = (uint32_t)data[8]  | ((uint32_t)data[9]  << 8) |
+                    ((uint32_t)data[10] << 16) | ((uint32_t)data[11] << 24);
+  uint32_t height = (uint32_t)data[12] | ((uint32_t)data[13] << 8) |
+                    ((uint32_t)data[14] << 16) | ((uint32_t)data[15] << 24);
+
+  // Validate dimensions before computing planeSize
+  if (width == 0 || width > 1200 || height == 0 || height > 1600) {
+    Serial.printf("Spectra6: invalid dimensions %ux%u\n", width, height);
+    return nullptr;
+  }
+
+  size_t planeSize = ((width + 7) / 8) * height;
+  size_t expectedSize = 16 + 5 * planeSize;
+
+  if (dataSize < expectedSize) {
+    Serial.printf("Spectra6: file too small (got %u, need %u)\n",
+                  (unsigned)dataSize, (unsigned)expectedSize);
+    return nullptr;
+  }
+
+  Serial.printf("Spectra6: decoding %ux%u, planeSize=%u\n",
+                width, height, (unsigned)planeSize);
+
+  auto bitmaps = allocateBitmaps(width, height);
+  if (!bitmaps) return nullptr;
+
+  const uint8_t *src = data + 16;
+  memcpy(bitmaps->blackBitmap,  src + 0 * planeSize, planeSize);
+  memcpy(bitmaps->yellowBitmap, src + 1 * planeSize, planeSize);
+  memcpy(bitmaps->redBitmap,    src + 2 * planeSize, planeSize);
+  memcpy(bitmaps->blueBitmap,   src + 3 * planeSize, planeSize);
+  memcpy(bitmaps->greenBitmap,  src + 4 * planeSize, planeSize);
+
+  return bitmaps;
 }
 
 std::unique_ptr<ColorImageBitmaps>
@@ -915,6 +926,11 @@ std::unique_ptr<ColorImageBitmaps>
 ImageScreen::processImageData(uint8_t *data, size_t dataSize) {
   if (dataSize < 4)
     return nullptr;
+
+  // Pre-encoded Spectra6 format: detect before size guard
+  if (dataSize >= 8 && memcmp(data, "SPECTRA6", 8) == 0) {
+    return decodeSpectra6(data, dataSize);
+  }
 
   if (dataSize > 1.5 * 1024 * 1024) { // over 1.5MB
     Serial.println("Image too large for PSRAM decoding. Temporarily caching to "

@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <time.h>
 
 #include "ApplicationConfig.h"
 #include "ApplicationConfigStorage.h"
@@ -77,34 +78,6 @@ void setup() {
   esp_sleep_wakeup_cause_t wakeupCause = esp_sleep_get_wakeup_cause();
   bool timerWake = (wakeupCause == ESP_SLEEP_WAKEUP_TIMER);
 
-  if (timerWake) {
-    printf("Timer wake-up detected.\r\n");
-
-    // Advance folder image index if enough time has passed
-    // Skip cycling when an image is pinned — pinned images don't rotate
-    if (appConfig->hasFolderUrl() && !appConfig->hasPinnedImage() &&
-        appConfig->sleepMinutes > 0) {
-      wakesSinceImageChange++;
-      bool shouldChange =
-          (appConfig->imageChangeMinutes == 0) ||
-          ((uint32_t)wakesSinceImageChange * appConfig->sleepMinutes >=
-           appConfig->imageChangeMinutes);
-
-      if (shouldChange) {
-        uint16_t idx = configStorage.loadImageIndex();
-        configStorage.saveImageIndex(idx + 1);
-        wakesSinceImageChange = 0;
-        printf("Folder: advanced image index to %d\r\n", idx + 1);
-      } else {
-        printf("Image change: %d/%d minutes elapsed\r\n",
-               wakesSinceImageChange * appConfig->sleepMinutes,
-               appConfig->imageChangeMinutes);
-      }
-    } else if (appConfig->hasPinnedImage()) {
-      printf("Pinned image active — skipping cycling\r\n");
-    }
-  }
-
   // --- SD Card Phase ---
   // The SD card shares SPI pins with the display, so we access it FIRST
   // (before the display driver initialises the SPI bus). If an image is
@@ -132,6 +105,85 @@ void setup() {
       printf("WiFi Connection Failed. \r\n");
     }
 
+    // --- NTP Sync + Quiet Hours Gate (timer wakes only) ---
+    bool quietHoursEnabled =
+        (appConfig->quietHoursStart != appConfig->quietHoursEnd);
+    bool gotTime = false;
+    struct tm timeinfo;
+
+    if (timerWake && quietHoursEnabled && wifi.isConnected()) {
+      // Only sync NTP when quiet hours are configured and we need to check them
+      configTime((long)appConfig->utcOffsetHours * 3600L, 0, "pool.ntp.org");
+      // dstOffsetSec = 0: DST not supported, use UTC offset only
+      gotTime = getLocalTime(&timeinfo, 5000);
+      if (gotTime) {
+        printf("NTP time: %02d:%02d:%02d\r\n", timeinfo.tm_hour,
+               timeinfo.tm_min, timeinfo.tm_sec);
+      } else {
+        printf("NTP sync failed\r\n");
+      }
+    }
+
+    if (timerWake && quietHoursEnabled) {
+      if (!gotTime) {
+        // WiFi failed or NTP timed out — cannot confirm time, sleep and retry.
+        // Note: display is skipped on WiFi failures during quiet hours (intentional).
+        uint16_t fallback = appConfig->sleepMinutes;
+        if (fallback == 0) fallback = appConfig->imageChangeMinutes;
+        if (fallback == 0) fallback = 30; // hard floor: never permanent-sleep
+        printf("Quiet hours: no time available, sleeping %d min\r\n", fallback);
+        esp_sleep_enable_timer_wakeup((uint64_t)fallback * 60ULL * 1000000ULL);
+        esp_deep_sleep_start();
+      }
+
+      uint8_t h  = timeinfo.tm_hour;
+      uint8_t qs = appConfig->quietHoursStart;
+      uint8_t qe = appConfig->quietHoursEnd;
+      bool inQuiet = (qs < qe) ? (h >= qs && h < qe) : (h >= qs || h < qe);
+
+      if (inQuiet) {
+        uint32_t secsLeft;
+        if (qe > h) {
+          secsLeft = (uint32_t)(qe - h) * 3600u
+                     - (uint32_t)timeinfo.tm_min * 60u
+                     - (uint32_t)timeinfo.tm_sec;
+        } else { // midnight-spanning: end hour is tomorrow
+          secsLeft = (uint32_t)(24u - h + qe) * 3600u
+                     - (uint32_t)timeinfo.tm_min * 60u
+                     - (uint32_t)timeinfo.tm_sec;
+        }
+        printf("Quiet hours active (%02d:xx -> %02d:00). Sleeping %u s.\r\n",
+               h, qe, secsLeft);
+        esp_sleep_enable_timer_wakeup((uint64_t)secsLeft * 1000000ULL);
+        esp_deep_sleep_start();
+      }
+    }
+
+    // --- Image Index Advance (after quiet hours gate — skipped wakes don't count) ---
+    if (timerWake) {
+      printf("Timer wake-up detected.\r\n");
+      if (appConfig->hasFolderUrl() && !appConfig->hasPinnedImage() &&
+          appConfig->sleepMinutes > 0) {
+        wakesSinceImageChange++;
+        bool shouldChange =
+            (appConfig->imageChangeMinutes == 0) ||
+            ((uint32_t)wakesSinceImageChange * appConfig->sleepMinutes >=
+             appConfig->imageChangeMinutes);
+        if (shouldChange) {
+          uint16_t idx = configStorage.loadImageIndex();
+          configStorage.saveImageIndex(idx + 1);
+          wakesSinceImageChange = 0;
+          printf("Folder: advanced image index to %d\r\n", idx + 1);
+        } else {
+          printf("Image change: %d/%d minutes elapsed\r\n",
+                 wakesSinceImageChange * appConfig->sleepMinutes,
+                 appConfig->imageChangeMinutes);
+        }
+      } else if (appConfig->hasPinnedImage()) {
+        printf("Pinned image active — skipping cycling\r\n");
+      }
+    }
+
     // --- Display Image Phase (FIRST) ---
     printf("Entering displayCurrentScreen()... \r\n");
     displayCurrentScreen(wifi.isConnected());
@@ -143,7 +195,9 @@ void setup() {
           appConfig->wifiSSID, appConfig->wifiPassword, appConfig->imageUrl,
           appConfig->folderUrl, appConfig->pinnedImageUrl,
           appConfig->ditherMode, appConfig->scalingMode,
-          appConfig->sleepMinutes, appConfig->imageChangeMinutes);
+          appConfig->sleepMinutes, appConfig->imageChangeMinutes,
+          appConfig->quietHoursStart, appConfig->quietHoursEnd,
+          appConfig->utcOffsetHours);
       ConfigurationServer server(serverConfig);
 
       bool useAP = !wifi.isConnected();
@@ -181,6 +235,9 @@ void setup() {
             appConfig->scalingMode = config.scalingMode;
             appConfig->sleepMinutes = config.sleepMinutes;
             appConfig->imageChangeMinutes = config.imageChangeMinutes;
+            appConfig->quietHoursStart = config.quietHoursStart;
+            appConfig->quietHoursEnd   = config.quietHoursEnd;
+            appConfig->utcOffsetHours  = config.utcOffsetHours;
 
             if (configStorage.save(*appConfig)) {
               printf("Configuration saved successfully to NVS.\r\n");
@@ -233,6 +290,32 @@ void setup() {
   } else {
     // No WiFi credentials — show image first, then start AP for setup
     printf("No WiFi credentials. Displaying image first...\r\n");
+
+    // Image index advance (no WiFi: quiet hours don't apply, always advance)
+    if (timerWake) {
+      printf("Timer wake-up detected.\r\n");
+      if (appConfig->hasFolderUrl() && !appConfig->hasPinnedImage() &&
+          appConfig->sleepMinutes > 0) {
+        wakesSinceImageChange++;
+        bool shouldChange =
+            (appConfig->imageChangeMinutes == 0) ||
+            ((uint32_t)wakesSinceImageChange * appConfig->sleepMinutes >=
+             appConfig->imageChangeMinutes);
+        if (shouldChange) {
+          uint16_t idx = configStorage.loadImageIndex();
+          configStorage.saveImageIndex(idx + 1);
+          wakesSinceImageChange = 0;
+          printf("Folder: advanced image index to %d\r\n", idx + 1);
+        } else {
+          printf("Image change: %d/%d minutes elapsed\r\n",
+                 wakesSinceImageChange * appConfig->sleepMinutes,
+                 appConfig->imageChangeMinutes);
+        }
+      } else if (appConfig->hasPinnedImage()) {
+        printf("Pinned image active — skipping cycling\r\n");
+      }
+    }
+
     displayCurrentScreen(false);
 
     if (!timerWake) {
@@ -241,7 +324,9 @@ void setup() {
           "", "", appConfig->imageUrl, appConfig->folderUrl,
           appConfig->pinnedImageUrl, appConfig->ditherMode,
           appConfig->scalingMode, appConfig->sleepMinutes,
-          appConfig->imageChangeMinutes);
+          appConfig->imageChangeMinutes,
+          appConfig->quietHoursStart, appConfig->quietHoursEnd,
+          appConfig->utcOffsetHours);
       ConfigurationServer server(serverConfig);
       server.run(
           [](const Configuration &config) {
@@ -271,6 +356,9 @@ void setup() {
             appConfig->scalingMode = config.scalingMode;
             appConfig->sleepMinutes = config.sleepMinutes;
             appConfig->imageChangeMinutes = config.imageChangeMinutes;
+            appConfig->quietHoursStart = config.quietHoursStart;
+            appConfig->quietHoursEnd   = config.quietHoursEnd;
+            appConfig->utcOffsetHours  = config.utcOffsetHours;
 
             if (configStorage.save(*appConfig)) {
               printf("Configuration saved successfully from AP mode.\r\n");
@@ -316,12 +404,24 @@ void setup() {
   }
 
   // --- Deep Sleep ---
-  if (appConfig->sleepMinutes > 0) {
-    uint64_t sleepUs = (uint64_t)appConfig->sleepMinutes * 60ULL * 1000000ULL;
+  uint16_t effectiveSleepMinutes = appConfig->sleepMinutes;
+
+  // For single image URL (no folder), use imageChangeMinutes as the wake
+  // interval so the device periodically re-downloads the image.
+  if (effectiveSleepMinutes == 0 && strlen(appConfig->imageUrl) > 0 &&
+      !appConfig->hasFolderUrl() && appConfig->imageChangeMinutes > 0) {
+    effectiveSleepMinutes = appConfig->imageChangeMinutes;
+    printf("Using imageChangeMinutes (%d min) as sleep timer for single image "
+           "URL.\r\n",
+           effectiveSleepMinutes);
+  }
+
+  if (effectiveSleepMinutes > 0) {
+    uint64_t sleepUs = (uint64_t)effectiveSleepMinutes * 60ULL * 1000000ULL;
     esp_sleep_enable_timer_wakeup(sleepUs);
     printf("Timed deep sleep for %d minutes. Device will wake "
            "automatically.\r\n",
-           appConfig->sleepMinutes);
+           effectiveSleepMinutes);
   } else {
     printf("Permanent deep sleep. Reset to wake.\r\n");
   }

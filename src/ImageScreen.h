@@ -79,6 +79,7 @@ private:
   std::unique_ptr<ColorImageBitmaps> decodePNG(File &file);
   std::unique_ptr<ColorImageBitmaps> decodePNG(uint8_t *data, size_t dataSize);
   std::unique_ptr<ColorImageBitmaps> decodeBMP(uint8_t *data, size_t dataSize);
+  std::unique_ptr<ColorImageBitmaps> decodeSpectra6(uint8_t *data, size_t dataSize);
 
 public:
   ImageScreen(DisplayType &display, ApplicationConfig &config,

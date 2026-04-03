@@ -1,0 +1,8 @@
+.pio
+.idea
+src/config_dev.h
+*.log
+*.txt
+*.py
+data/process.*
+fix_files.py

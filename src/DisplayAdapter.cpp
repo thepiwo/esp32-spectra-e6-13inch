@@ -26,8 +26,6 @@ void DisplayAdapter::init(uint32_t serial_diag_bitrate) {
     // Fill with white
     memset(_frameBuffer, (WHITE << 4) | WHITE, FRAME_BUFFER_SIZE);
 
-    printf("Initializing Good-Display ESP32-133C02 QSPI hardware... \r\n");
-
     // Initialize GPIO and SPI bus using the manufacturer's driver
     initialGpio();
     initialSpi();
@@ -39,7 +37,6 @@ void DisplayAdapter::init(uint32_t serial_diag_bitrate) {
     initEPD();
 
     _initialized = true;
-    printf("Display initialized successfully. \r\n");
   } else {
     // Re-init the EPD registers (as the manufacturer does before each refresh)
     initEPD();
@@ -114,8 +111,6 @@ void DisplayAdapter::sendFrameBufferToDisplay() {
   const unsigned int Width1 = Width / 2; // 300 bytes per section per row
   const unsigned int Height = EPD_NATIVE_HEIGHT; // 1600 rows
 
-  Serial.println("Sending framebuffer to display (dual-IC split)...");
-
   // --- Send left half (CS0) ---
   setPinCsAll(GPIO_HIGH);
   setPinCs(0, 0);
@@ -134,17 +129,11 @@ void DisplayAdapter::sendFrameBufferToDisplay() {
     vTaskDelay(pdMS_TO_TICKS(1));
   }
   setPinCsAll(GPIO_HIGH);
-
-  Serial.println("Framebuffer transfer complete.");
 }
 
 void DisplayAdapter::display(bool partial_update_mode) {
-  printf("DisplayAdapter::display() started... \r\n");
   sendFrameBufferToDisplay();
-
-  printf("Triggering e-paper refresh (this takes ~20 seconds)... \r\n");
   epdDisplay();
-  printf("Display refresh complete. \r\n");
 }
 
 void DisplayAdapter::hibernate() {
@@ -153,5 +142,4 @@ void DisplayAdapter::hibernate() {
   writeEpd(POF, (unsigned char *)POF_V, sizeof(POF_V));
   checkBusyHigh();
   setPinCsAll(GPIO_HIGH);
-  Serial.println("Display entered hibernate mode.");
 }

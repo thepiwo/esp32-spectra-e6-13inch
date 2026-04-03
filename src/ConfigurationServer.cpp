@@ -219,6 +219,15 @@ void ConfigurationServer::handleSave(AsyncWebServerRequest *request) {
     if (request->hasParam("pinnedImageUrl", true))
       config.pinnedImageUrl =
           request->getParam("pinnedImageUrl", true)->value();
+    if (request->hasParam("quiet_hours_start", true))
+      config.quietHoursStart = constrain(
+          request->getParam("quiet_hours_start", true)->value().toInt(), 0, 23);
+    if (request->hasParam("quiet_hours_end", true))
+      config.quietHoursEnd = constrain(
+          request->getParam("quiet_hours_end", true)->value().toInt(), 0, 23);
+    if (request->hasParam("utc_offset_hours", true))
+      config.utcOffsetHours = constrain(
+          request->getParam("utc_offset_hours", true)->value().toInt(), -12, 14);
 
     /*
     // Auto-clear pin if folder URL changed — keeping it for now per user
@@ -311,6 +320,13 @@ String ConfigurationServer::getConfigurationPage() {
   setSelected(html, "{{SLEEP_SEL_360}}", sl == 360);
   setSelected(html, "{{SLEEP_SEL_720}}", sl == 720);
   setSelected(html, "{{SLEEP_SEL_1440}}", sl == 1440);
+
+  html.replace("{{CURRENT_UTC_OFFSET}}",
+               String(currentConfiguration.utcOffsetHours));
+  html.replace("{{CURRENT_QUIET_START}}",
+               String(currentConfiguration.quietHoursStart));
+  html.replace("{{CURRENT_QUIET_END}}",
+               String(currentConfiguration.quietHoursEnd));
 
   return html;
 }

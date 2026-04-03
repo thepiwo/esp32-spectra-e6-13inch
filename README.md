@@ -2,7 +2,7 @@
 
 Custom firmware for the **Good-Display 13.3-inch E-Ink Spectra 6 panel (GDEP133C02)** paired with the **ESP32-133C02** driver board. Displays full-color (6-colour) images uploaded via a built-in web portal, then enters deep sleep to preserve the image indefinitely.
 
-Originally adapted from [shi-314/esp32-spectra-e6](https://github.com/shi-314/esp32-spectra-e6) (MIT License), which targeted a smaller display. This fork adds full support for the 13.3" panel's dual-IC QSPI interface, image upload via a web server, Floyd-Steinberg dithering, JPEG/PNG/BMP decoding, automatic image scaling, and deep sleep management.
+Originally adapted from [shi-314/esp32-spectra-e6](https://github.com/shi-314/esp32-spectra-e6) (MIT License), which targeted a smaller display. This fork adds full support for the 13.3" panel's dual-IC QSPI interface, image upload via a web server, multiple dithering algorithms, JPEG/PNG/BMP decoding, automatic image scaling, HTTP folder cycling, pre-encoded `.spectra6` format support, quiet hours, and deep sleep management.
 
 ---
 
@@ -15,8 +15,10 @@ Originally adapted from [shi-314/esp32-spectra-e6](https://github.com/shi-314/es
 - [Architecture Overview](#architecture-overview)
 - [Boot Flow](#boot-flow)
 - [Image Processing Pipeline](#image-processing-pipeline)
+- [Pre-Encoded Spectra6 Format](#pre-encoded-spectra6-format)
 - [Setup & Deployment](#setup--deployment)
 - [Configuration](#configuration)
+- [Quiet Hours](#quiet-hours)
 - [Flash Partition Layout](#flash-partition-layout)
 - [Dependencies & Libraries](#dependencies--libraries)
 - [Source Code Structure](#source-code-structure)
@@ -28,16 +30,18 @@ Originally adapted from [shi-314/esp32-spectra-e6](https://github.com/shi-314/es
 ## Features
 
 - **6-colour rendering** — Black, White, Yellow, Red, Blue, Green via the Spectra 6 palette.
-- **Web-based image upload & rotation** — Upload JPEG, PNG, or BMP images through a browser or configure an HTTP folder to rotate through images.
-- **User-selectable dithering** — Choose between Floyd-Steinberg, Atkinson, Ordered (Bayer), or Nearest Neighbour (No Dithering) to render natural or stylized images on the 6-colour palette.
-- **Automatic image scaling (smart aspect ratio)** — Images smaller or larger than 1200×1600 are nearest-neighbour scaled in-place. Aspect ratios are preserved via automatic letterboxing/pillarboxing.
-- **Timed / Deep sleep** — The device can sleep indefinitely after configuring or wake at set intervals (15m, 30m, 1h, etc.) to cycle images. Only a hardware power reset wakes it from indefinite sleep.
-- **PSRAM-optimised** — All large buffers (framebuffer, decode buffers, dither bitmaps) are allocated in the ESP32-S3's 8 MB PSRAM.
+- **Web-based image upload** — Upload JPEG, PNG, or BMP images directly through a browser.
+- **HTTP image folder cycling** — Point the device at an HTTP directory (nginx autoindex, Python `http.server`, NAS share, etc.) and it cycles through images in alphabetical order on each wake.
+- **Pre-encoded `.spectra6` format** — Serve pre-dithered images from a companion converter tool. The device skips all on-device decoding — just a direct memory copy into the display. Dramatically reduces PSRAM usage and boot time.
+- **User-selectable dithering** — Choose between Floyd-Steinberg, Atkinson, Ordered (Bayer), or Nearest Neighbour. Dithering controls are hidden in the web portal when a `.spectra6` URL is configured.
+- **Automatic image scaling** — Images of any size are nearest-neighbour scaled in-place to fit 1200×1600, with aspect ratio preserved via automatic letterboxing/pillarboxing.
+- **Quiet hours** — Configure a daily time window (e.g. 11 pm–8 am) during which the device skips its noisy e-ink refresh and sleeps directly until the window ends. Requires WiFi for NTP time sync.
+- **Timed deep sleep** — Wake at configurable intervals (15 min, 30 min, 1 h, etc.) to cycle images. Deep sleep preserves the displayed image with zero power draw.
+- **PSRAM-optimised** — All large buffers are allocated in the ESP32-S3's 8 MB PSRAM.
 - **Dual-IC QSPI** — Custom `DisplayAdapter` bridges the manufacturer's C driver into an `Adafruit_GFX`-compatible API, handling the split framebuffer across two driver ICs.
-- **WiFi configuration portal** — First-boot Access Point mode with a web UI for entering WiFi credentials and an image URL.
-- **NVS persistent storage** — WiFi credentials and image URL survive deep sleep and power cycles.
+- **WiFi configuration portal** — First-boot Access Point mode with a web UI for entering WiFi credentials, image URL, and all display settings.
+- **NVS persistent storage** — All configuration survives deep sleep and power cycles.
 - **LittleFS image storage** — Uploaded images are stored on the internal flash filesystem (~5.6 MB partition).
-
 
 ---
 
@@ -96,17 +100,7 @@ The display uses a **Quad-SPI** interface with **two chip-select lines** (one pe
 | **SD_D0** (MISO) | **40** | `SPI_Data1` (display) |
 | **SD_CS** | **21** | `SW_4` (user button) |
 
-### Why the Display and SD Card Share Pins
-
-The ESP32-133C02 board connects both the display and the SD card to the same `SPI3_HOST` bus. They are differentiated by their **chip select (CS) lines**:
-
-- **CS0 (GPIO 18)** → Display driver IC 0 (left half)
-- **CS1 (GPIO 17)** → Display driver IC 1 (right half)
-- **CS (GPIO 21)** → SD card
-
-This means the display and SD card **cannot be used simultaneously**. The firmware must ensure the display's CS lines are **deasserted (HIGH)** before accessing the SD card, and vice versa. In the current firmware, SD card support is not enabled — images are stored on the internal LittleFS flash filesystem instead.
-
-> **Note:** If you want to add SD card support in the future, you would initialize `SD.begin(21)` using `SPI3_HOST` (the same bus), being careful to manage chip-select timing to avoid bus conflicts.
+The display and SD card **cannot be used simultaneously**. The firmware accesses the SD card first (before display initialisation), copies any found image to LittleFS, then releases the bus for the display driver.
 
 ---
 
@@ -115,7 +109,7 @@ This means the display and SD card **cannot be used simultaneously**. The firmwa
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                        main.cpp (setup)                        │
-│  Boot → WiFi → Display Image → Web Server (10 min) → Sleep    │
+│  Boot → WiFi → NTP → Quiet Hours → Display → Web Server → Sleep│
 ├─────────────┬───────────────┬───────────────┬──────────────────┤
 │ ImageScreen │ ConfigScreen  │ ConfigServer  │ WiFiConnection   │
 │  (render)   │   (AP mode)   │ (web portal)  │  (STA connect)   │
@@ -129,59 +123,65 @@ This means the display and SD card **cannot be used simultaneously**. The firmwa
 │   QSPI init, GPIO config, EPD commands, power sequencing       │
 ├─────────────────────────────────────────────────────────────────┤
 │                    ESP32-S3 Hardware                            │
-│           SPI3_HOST  •  8MB PSRAM  •  16MB Flash                │
+│           SPI3_HOST  •  8MB PSRAM  •  16MB Flash               │
 └─────────────────────────────────────────────────────────────────┘
 ```
-
-### Key Design Decision: DisplayAdapter
-
-The original project by [shi-314](https://github.com/shi-314/esp32-spectra-e6) used the `GxEPD2` library, which only supports standard SPI. The 13.3" panel requires **QSPI with dual driver ICs**, so a custom `DisplayAdapter` class was created:
-
-1. **Inherits from `Adafruit_GFX`** — provides `drawPixel()`, `fillScreen()`, `drawBitmap()`, text rendering, etc.
-2. **PSRAM framebuffer** — a 960 KB buffer (1200 × 1600 pixels, 4 bits per pixel, 2 pixels packed per byte).
-3. **Dual-IC split** — on `display()`, the framebuffer is sent row-by-row: left 600px to CS0, right 600px to CS1.
-4. **Colour mapping** — uses 4-bit colour codes matching the manufacturer's constants (e.g., `BLACK = 0x00`, `WHITE = 0x11`, `RED = 0x33`).
 
 ---
 
 ## Boot Flow
 
 ```
-Power On / Reset
+Power On / Timer Wake
       │
       ▼
-  Serial.begin(115200)
   Load config from NVS
       │
-      ├── Has WiFi credentials?
+      ├── Timer wake + quiet hours configured?
       │       │
-      │       ├── YES → Connect to WiFi
-      │       │         │
+      │       ├── Connect WiFi → sync NTP
+      │       │       ├── In quiet window → sleep until end of window
+      │       │       └── Outside window → proceed
+      │       └── NTP unavailable → sleep and retry
+      │
+      ▼
+  SD Card: copy image to LittleFS (if present)
+      │
+      ▼
+  Connect to WiFi
+      │
+      ├── Has credentials?
+      │       │
+      │       ├── YES → Connect
       │       │         ▼
-      │       │    Display stored image immediately
-      │       │         │
+      │       │    Advance image index (if timer wake + folder configured)
       │       │         ▼
-      │       │    Start web server (port 80)
-      │       │    Run for 10 minutes
-      │       │    (auto-refresh display on new upload)
-      │       │         │
+      │       │    Display image (LittleFS → Folder → Single URL, in priority order)
       │       │         ▼
-      │       │    Enter deep sleep (wakes after configured interval, or permanent)
+      │       │    Web server runs for 10 minutes  [skipped on timer wake]
+      │       │         ▼
+      │       │    Enter deep sleep (timer or permanent)
       │       │
       │       └── NO → Display stored image
       │                Start Access Point ("Framey-Config")
-      │                Run config web portal for 10 minutes
+      │                Run config portal for 10 minutes
       │                Enter deep sleep
-      │
-      ▼
-  Only a HARDWARE POWER RESET wakes the device
 ```
+
+### Image Priority
+
+When multiple image sources are configured, the device uses this priority order:
+
+1. **Pinned folder image** — a specific folder image pinned via the web portal
+2. **Local LittleFS image** — uploaded via the web portal
+3. **HTTP folder** — cycles through images in alphabetical order
+4. **Single image URL** — downloads a single image each wake
 
 ---
 
 ## Image Processing Pipeline
 
-When an image is uploaded or loaded from LittleFS:
+### Standard path (JPEG / PNG / BMP)
 
 ```
 Raw Image File (JPEG / PNG / BMP)
@@ -189,110 +189,116 @@ Raw Image File (JPEG / PNG / BMP)
       ▼
   Format Detection (magic bytes: FFD8=JPEG, 89PNG=PNG, BM=BMP)
       │
-      ├── JPEG: TJpg_Decoder → RGB565 buffer (1200×1600 in PSRAM)
-      ├── PNG:  PNGdec → RGB565 buffer (streaming from LittleFS)
-      └── BMP:  Manual parser → RGB565 buffer
+      ├── JPEG: JPEGDEC → RGB565 buffer (PSRAM)
+      ├── PNG:  PNGdec  → RGB565 buffer (streaming or in-memory)
+      └── BMP:  Manual 24-bit parser → RGB565 buffer
       │
       ▼
-  Scale-to-Fit (if image < 1200×1600)
-  Nearest-neighbour upscaling, aspect-ratio preserved, centred
+  Scale-to-Fit (nearest-neighbour, aspect-ratio preserved)
+  White letterbox/pillarbox bars on mismatched aspect ratios
       │
       ▼
-  Floyd-Steinberg Dithering
-  Quantise each pixel to nearest of 6 Spectra colours
-  Diffuse error to neighbouring pixels (7/16, 3/16, 5/16, 1/16)
+  Dithering (user-selectable):
+  ├── Floyd-Steinberg  (smooth gradients, default)
+  ├── Atkinson         (higher contrast)
+  ├── Ordered/Bayer    (structured pattern)
+  └── None             (nearest colour, for vector art)
       │
       ▼
-  Generate 5 colour bitmaps (1-bit each):
+  5 colour bitmaps (1-bit each):
   Black, Yellow, Red, Blue, Green  (White = no bits set)
       │
       ▼
-  Render bitmaps via DisplayAdapter::drawBitmap()
-  Pack into 4-bit PSRAM framebuffer
+  Render via DisplayAdapter::drawBitmap() → 4-bit PSRAM framebuffer
       │
       ▼
-  Send to display via QSPI (dual-IC split)
-  Trigger e-paper refresh (~20 seconds)
+  Send to display via QSPI (dual-IC split) → ~20 second refresh
+```
+
+### Pre-encoded path (`.spectra6`)
+
+```
+Pre-encoded .spectra6 file (served over HTTP)
+      │
+      ▼
+  Magic header detection ("SPECTRA6")
+      │
+      ▼
+  Direct memcpy into 5 colour bitmaps — no decode, no dithering
+      │
+      ▼
+  Render via DisplayAdapter::drawBitmap() → 4-bit PSRAM framebuffer
+      │
+      ▼
+  Send to display via QSPI → ~20 second refresh
 ```
 
 ### Supported Image Formats
 
-| Format | Max Size | Notes |
-|---|---|---|
-| **JPEG** | Any (decoded in tiles) | Source buffer freed before dithering to save PSRAM |
-| **PNG** | Any (streamed line-by-line from LittleFS) | Supports alpha channel |
-| **BMP** | 24-bit uncompressed | Directly parsed, no library needed |
+| Format | Notes |
+|---|---|
+| **JPEG** | Any size; pre-scaled by JPEGDEC before full decode when very large |
+| **PNG** | Any size; supports alpha channel |
+| **BMP** | 24-bit uncompressed |
+| **`.spectra6`** | Pre-encoded binary format — zero on-device dithering or decoding |
 
-### Screen Sizes & Display Dimensions
+### Display Dimensions
 
 | Property | Value |
 |---|---|
 | **Physical screen** | 13.3 inches diagonal |
 | **Native resolution** | 1200 × 1600 pixels |
-| **Orientation** | Portrait (width < height) |
+| **Orientation** | Portrait |
 | **Aspect ratio** | 3:4 |
-| **Pixel density** | ~150 PPI |
-| **Colour depth** | 6 colours (Black, White, Yellow, Red, Blue, Green) |
-| **Refresh time** | ~20 seconds for a full screen update |
+| **Colour depth** | 6 colours |
+| **Refresh time** | ~20 seconds |
 
-The ideal source image is **1200 × 1600 pixels** in portrait orientation. At this exact size, the image maps 1:1 to the display with no scaling or cropping.
+The ideal source image is **1200 × 1600 px portrait**. Any other size is scaled automatically.
 
-### How Image Resizing Works
+---
 
-The firmware handles images of any size natively via **in-place overlap-safe scaling algorithms** to fit everything within PSRAM without overflowing memory limits. It will never reject an upload.
+## Pre-Encoded Spectra6 Format
 
-| Uploaded Image | What Happens |
-|---|---|
-| **Exactly 1200×1600** | Pixel-perfect — no scaling, no cropping |
-| **Smaller than 1200×1600** | **Scaled up** to fit within the display boundaries |
-| **Larger than 1200×1600** | **Scaled down** to fit within the display boundaries |
-| **Different aspect ratio** | Scaled to fit within 1200×1600 while preserving aspect ratio, automatically letterboxed or pillarboxed with white bars. |
+The `.spectra6` format lets you do all image processing on a PC and serve the result directly to the device — the device just copies the data into the display pipeline with no CPU or memory overhead.
 
-**Upscaling detail (small images):**
+### Why use it?
 
-The `scaleToFit()` function in `ImageScreen.cpp` performs mathematically bounded in-place scaling without allocating a second full temporary buffer:
-
-1. Calculate the scale factor: `scale = min(1200/srcWidth, 1600/srcHeight)`
-2. Compute the scaled dimensions while maintaining the original aspect ratio
-3. Centre the scaled image in the 1200×1600 buffer (white bars on any unused edges)
-4. For each destination pixel, map back to the nearest source pixel using mathematical shift overlaps — no blurring or interpolation artefacts
-
-### How Dithering Works
-
-E-Ink Spectra 6 displays can only show **6 discrete colours**. A typical photograph contains millions of colours, so the firmware must **quantise** every pixel to one of the 6 available colours. The firmware supports multiple Dithering algorithms to handle this quantisation depending on the photographic style:
-
-- **Floyd-Steinberg** (Default): Spreads "error" (difference between original colour and the chosen colour) to neighbouring pixels creating smooth transitions and natural photographs.
-- **Atkinson**: Diffuses only a fraction of the error, reducing noise but creating higher-contrast, punchier images.
-- **Ordered (Bayer 8x8)**: Uses a static threshold matrix to decide colour. Creates distinct, stylised crosshatch patterns and completely avoids the "colour bleed" effect found in error-diffusion algorithms.
-- **None (Nearest Colour)**: Simply picks the closest mathematical colour with no dithering. Useful for vector art, charts, or pre-dithered images.
-
-**The Spectra 6 Palette (RGB values):**
-
-| Index | Colour | RGB |
+| | Standard (JPEG/PNG) | Pre-encoded (`.spectra6`) |
 |---|---|---|
-| 0 | Black | `(0, 0, 0)` |
-| 1 | White | `(255, 255, 255)` |
-| 2 | Yellow | `(230, 230, 0)` |
-| 3 | Red | `(204, 0, 0)` |
-| 4 | Blue | `(0, 51, 204)` |
-| 5 | Green | `(0, 204, 0)` |
+| **On-device dithering** | Yes (~seconds) | None |
+| **Peak PSRAM** | ~5 MB | ~2.4 MB |
+| **Download size** | 1–8 MB | ~1.17 MB (fixed) |
+| **Dithering quality** | Good | Best (full floating-point on PC) |
 
-**The algorithm (per pixel):**
-
-1. Take the current pixel's RGB value, plus any accumulated error from previously processed neighbours
-2. Find the **nearest palette colour** using Euclidean distance in RGB space: `distance = dr² + dg² + db²`
-3. Calculate the **error** = original RGB − chosen palette RGB
-4. Distribute this error to 4 neighbouring pixels:
+### File format
 
 ```
-             current pixel    →  right pixel  (+7/16 of error)
-                  ↓
-  bottom-left  (+3/16)     bottom (+5/16)     bottom-right (+1/16)
+Bytes 0–7:   ASCII magic "SPECTRA6" (no null terminator)
+Bytes 8–11:  uint32_t width  (little-endian)
+Bytes 12–15: uint32_t height (little-endian)
+Bytes 16+:   5 × planeSize bytes  (black, yellow, red, blue, green)
+             planeSize = ((width + 7) / 8) × height
 ```
 
-5. This error diffusion creates a natural-looking pattern of dots from the limited palette, simulating intermediate colours through spatial mixing
+Total size for 1200×1600: **1,200,016 bytes (~1.17 MB)**
 
-**The output** is 5 one-bit bitmaps (one for each non-white colour). A pixel set in the black bitmap gets drawn as black; a pixel set in the yellow bitmap gets drawn as yellow; no bits set = white. These bitmaps are rendered via `Adafruit_GFX::drawBitmap()` and packed into the 4-bit PSRAM framebuffer for QSPI transfer to the display.
+Each plane is a 1-bpp MSB-first row-major bitmap. White pixels have no bit set in any plane.
+
+### Converter tool
+
+Use the companion Python converter to produce `.spectra6` files from standard images:
+
+👉 **[PhotoPainter-E-Ink-Spectra-6-image-converter](https://github.com/thepiwo/PhotoPainter-E-Ink-Spectra-6-image-converter)** — companion converter that produces `.spectra6` files from standard images
+
+```bash
+python ConvertTo6ColorsForEInkSpectra6.py image.jpg --format spectra6 --dither 3
+```
+
+- `--dither 3` — Floyd-Steinberg (recommended; produces fuller, more saturated output than the Atkinson default)
+- `--dither 1` — Atkinson
+- Target resolution: **1200×1600** (portrait)
+
+The device auto-detects `.spectra6` files by their magic header — no configuration needed. When a `.spectra6` URL is entered in the web portal, the dithering selector is automatically hidden.
 
 ---
 
@@ -313,7 +319,7 @@ cd esp32-spectra-e6-13inch
 # Build and upload firmware
 pio run --target upload
 
-# Upload the LittleFS filesystem (HTML config page)
+# Upload the LittleFS filesystem (web portal HTML)
 pio run --target uploadfs
 
 # Monitor serial output
@@ -328,12 +334,14 @@ Create `src/config_dev.h` (gitignored) to set default WiFi credentials for devel
 #ifndef CONFIG_DEV_H
 #define CONFIG_DEV_H
 
-const char DEFAULT_WIFI_SSID[] = "YourNetwork";
+const char DEFAULT_WIFI_SSID[]     = "YourNetwork";
 const char DEFAULT_WIFI_PASSWORD[] = "YourPassword";
-const char DEFAULT_IMAGE_URL[] = "https://example.com/image.png";
+const char DEFAULT_IMAGE_URL[]     = "https://example.com/image.png";
 
 #endif
 ```
+
+> **Note:** Adding new fields to `ApplicationConfig` changes the NVS blob size. On first boot after a firmware update that adds fields, stored settings are automatically cleared and the device uses defaults. Re-enter your settings via the web portal.
 
 ---
 
@@ -342,20 +350,47 @@ const char DEFAULT_IMAGE_URL[] = "https://example.com/image.png";
 ### First Boot (No Credentials)
 
 1. The device creates a WiFi Access Point: **`Framey-Config`** (password: `configure123`)
-2. Connect to it with your phone/laptop
+2. Connect with your phone or laptop
 3. Navigate to `http://192.168.4.1`
-4. Enter your WiFi SSID, password, and (optionally) an image URL
-5. Save — credentials are stored in NVS and persist across reboots
+4. Enter your WiFi SSID, password, and image URL
+5. Save — settings are stored in NVS and survive reboots and deep sleep
 
-### Normal Operation
+### Web Portal Settings
 
-1. Device boots and connects to your WiFi
-2. Displays the stored image immediately
-3. Web server runs for **10 minutes** at the device's IP address (shown in serial monitor)
-4. Configure options or upload local images via the web portal at `http://<device-ip>`
-5. Display refreshes automatically after each image upload
-6. After 10 minutes, device enters **deep sleep** (image stays on screen)
-7. It will wake up according to the **Wake From Sleep** interval configured in the web UI. If set to **Never**, only a hardware power reset wakes the device. Note the sleep timer runs from the end of the previous refresh, preserving power in a zero-battery-drain state.
+Once configured, the device's web portal is available at `http://<device-ip>` during the 10-minute server window after each boot.
+
+| Setting | Description |
+|---|---|
+| **Single Image URL** | Direct URL to a JPEG, PNG, BMP, or `.spectra6` file |
+| **Image Folder URL** | HTTP directory URL; device cycles images alphabetically |
+| **Dithering Algorithm** | Floyd-Steinberg / Atkinson / Ordered / None (hidden for `.spectra6` URLs) |
+| **Scaling Mode** | Fill (crop to cover) or Fit (letterbox) |
+| **Change Image Every** | How often to advance to the next folder image |
+| **Wake From Sleep Every** | How often the device wakes from deep sleep |
+| **UTC Offset (hours)** | Your timezone offset from UTC, used for quiet hours |
+| **Quiet From / Until** | Hour range (0–23) during which the display will not refresh |
+
+### Folder Cycling
+
+Set **Image Folder URL** to an HTTP directory that serves image files. The device:
+
+1. Fetches the directory listing (supports nginx autoindex, Apache, Python `http.server`, JSON arrays)
+2. Sorts filenames alphabetically for deterministic ordering
+3. Advances to the next image on each wake (subject to **Change Image Every** interval)
+
+You can also browse the folder from the web portal and **pin** a specific image to display it indefinitely.
+
+---
+
+## Quiet Hours
+
+Quiet hours prevent the noisy e-ink refresh during set times — useful for bedrooms.
+
+- Set **UTC Offset**, **Quiet From** (start hour, 0–23), and **Quiet Until** (end hour, 0–23)
+- Midnight-spanning ranges work: e.g. start=23, end=8 means 11 pm to 8 am
+- Set both to the same value to disable
+- Requires WiFi — if the device cannot reach NTP, it sleeps for the normal sleep interval and retries on the next wake
+- On a quiet-hours wake, the device sleeps precisely until the end of the quiet window (e.g. if it wakes at 3 am with quiet hours until 8 am, it sleeps exactly 5 hours)
 
 ---
 
@@ -363,12 +398,10 @@ const char DEFAULT_IMAGE_URL[] = "https://example.com/image.png";
 
 | Partition | Type | Offset | Size | Purpose |
 |---|---|---|---|---|
-| `nvs` | data (nvs) | 0x9000 | 20 KB | WiFi credentials, image URL |
+| `nvs` | data (nvs) | 0x9000 | 20 KB | WiFi credentials, config, image index |
 | `otadata` | data (ota) | 0xE000 | 8 KB | OTA metadata |
 | `app0` | app (ota_0) | 0x10000 | 2.3 MB | Firmware |
-| `spiffs` | data (spiffs) | 0x260000 | **5.6 MB** | LittleFS (uploaded images + HTML) |
-
-The 5.6 MB LittleFS partition is large enough for one high-resolution image at a time.
+| `spiffs` | data (spiffs) | 0x260000 | **5.6 MB** | LittleFS (uploaded images + web portal HTML) |
 
 ---
 
@@ -376,44 +409,44 @@ The 5.6 MB LittleFS partition is large enough for one high-resolution image at a
 
 All dependencies are managed by PlatformIO and declared in `platformio.ini`.
 
-### Hardware/Display Libraries
+### Hardware/Display
 
-| Library | Source | Purpose |
-|---|---|---|
-| **Adafruit GFX** | `adafruit/Adafruit GFX Library@^1.11.5` | Base graphics primitives (inherited by DisplayAdapter) |
-| **U8g2** | `olikraus/U8g2@^2.36.5` | Font rendering engine |
-| **U8g2_for_Adafruit_GFX** | [GitHub](https://github.com/olikraus/U8g2_for_Adafruit_GFX.git) | Bridge between U8g2 fonts and Adafruit_GFX |
+| Library | Purpose |
+|---|---|
+| **Adafruit GFX** | Base graphics primitives (inherited by DisplayAdapter) |
+| **U8g2** | Font rendering engine |
+| **U8g2_for_Adafruit_GFX** | Bridge between U8g2 fonts and Adafruit_GFX |
 
-### Image Decoding Libraries
+### Image Decoding
 
-| Library | Source | Purpose |
-|---|---|---|
-| **TJpg_Decoder** | `bodmer/TJpg_Decoder@^1.1.0` | Hardware-accelerated JPEG decoding |
-| **PNGdec** | `bitbank2/PNGdec@^1.0.1` | PNG decoding (streaming from file) |
+| Library | Purpose |
+|---|---|
+| **JPEGDEC** | JPEG decoding with hardware scaling |
+| **PNGdec** | PNG decoding (streaming from file or memory) |
 
-### Networking Libraries
+### Networking
 
-| Library | Source | Purpose |
-|---|---|---|
-| **ESPAsyncWebServer** | [GitHub](https://github.com/ESP32Async/ESPAsyncWebServer.git) | Async HTTP server for config portal and image uploads |
-| **AsyncTCP** | [GitHub](https://github.com/ESP32Async/AsyncTCP.git) | Async TCP layer (required by ESPAsyncWebServer) |
-| **WiFi** | ESP32 Arduino core | WiFi STA and AP mode |
-| **HTTPClient** | ESP32 Arduino core | Download images from a URL |
-| **DNSServer** | ESP32 Arduino core | Captive portal in AP mode |
+| Library | Purpose |
+|---|---|
+| **ESPAsyncWebServer** | Async HTTP server for config portal and image uploads |
+| **AsyncTCP** | Async TCP layer (required by ESPAsyncWebServer) |
+| **WiFi** | WiFi STA and AP mode |
+| **HTTPClient** | Image download from URL |
+| **DNSServer** | Captive portal in AP mode |
 
-### Utility Libraries
+### Utility
 
-| Library | Source | Purpose |
-|---|---|---|
-| **qrcode** | `ricmoo/qrcode@^0.0.1` | QR code generation for config screen |
-| **FS / SPIFFS / LittleFS** | ESP32 Arduino core | Filesystem for image storage |
+| Library | Purpose |
+|---|---|
+| **qrcode** | QR code generation for config screen |
+| **FS / LittleFS** | Filesystem for image and HTML storage |
 
 ### Upstream / Example Code
 
 | Repository | Relationship |
 |---|---|
-| [shi-314/esp32-spectra-e6](https://github.com/shi-314/esp32-spectra-e6) | **Original project** — firmware for smaller Spectra 6 displays using GxEPD2. This repo forked the image processing, dithering, WiFi setup, and config portal logic. |
-| [Good-Display example code](https://www.good-display.com/) | **Manufacturer C driver** — `GDEP133C02.c`, `comm.c`, `pindefine.h` are adapted from Good-Display's official ESP-IDF example for the ESP32-133C02 board. These handle QSPI initialisation, EPD command sequences, and dual-IC communication. |
+| [shi-314/esp32-spectra-e6](https://github.com/shi-314/esp32-spectra-e6) | **Original project** — firmware for smaller Spectra 6 displays. This repo forked the image processing, dithering, WiFi setup, and config portal logic. |
+| [Good-Display example code](https://www.good-display.com/) | **Manufacturer C driver** — `GDEP133C02.c`, `comm.c`, `pindefine.h` are adapted from Good-Display's official ESP-IDF example. These handle QSPI initialisation, EPD commands, and dual-IC communication. |
 
 ---
 
@@ -421,56 +454,69 @@ All dependencies are managed by PlatformIO and declared in `platformio.ini`.
 
 ```
 src/
-├── main.cpp                  # Entry point: boot flow, WiFi, web server loop, deep sleep
+├── main.cpp                    # Boot flow, WiFi, NTP, quiet hours gate, web server, deep sleep
 │
-├── DisplayAdapter.cpp/.h     # Adafruit_GFX subclass wrapping the QSPI driver
-│                               Manages PSRAM framebuffer and dual-IC split transfer
+├── DisplayAdapter.cpp/.h       # Adafruit_GFX subclass wrapping the QSPI driver
+│                                 PSRAM framebuffer, dual-IC split transfer
 │
-├── ImageScreen.cpp/.h        # Image loading, decoding (JPEG/PNG/BMP), 
-│                               Floyd-Steinberg dithering, nearest-neighbour scaling,
-│                               bitmap rendering to display
+├── ImageScreen.cpp/.h          # Image loading pipeline:
+│                                 JPEG/PNG/BMP/Spectra6 decode, scaling, dithering,
+│                                 bitmap rendering; LittleFS + HTTP folder + URL sources
 │
-├── ConfigurationServer.cpp/.h # Async web server: config portal, image upload handler
-├── ConfigurationScreen.cpp/.h # AP mode display (QR code, connection info)
+├── FolderImageSource.cpp/.h    # HTTP directory listing parser + image downloader
+│                                 Supports HTML autoindex and JSON array formats
 │
-├── WiFiConnection.cpp/.h     # WiFi STA connection manager (DHCP)
-├── HttpDownloader.cpp/.h     # HTTPS image downloader with ETag caching
+├── ConfigurationServer.cpp/.h  # Async web server: config portal, image upload, folder browse
+├── ConfigurationScreen.cpp/.h  # AP mode display (QR code + connection info)
 │
-├── ApplicationConfig.h       # Runtime config struct (SSID, password, image URL)
-├── ApplicationConfigStorage  # NVS read/write for persistent config
-├── config_default.h          # Default empty credentials (safe to commit)
+├── WiFiConnection.cpp/.h       # WiFi STA connection manager
+├── HttpDownloader.cpp/.h       # HTTP/HTTPS image downloader with ETag caching
+├── SDCardManager.cpp/.h        # SD card → LittleFS image copy (runs before display init)
 │
-├── GDEP133C02.c/.h           # [Manufacturer] EPD init, command sequences, display refresh
-├── comm.c/.h                 # [Manufacturer] SPI bus init, GPIO config, SPI transactions
-├── pindefine.h               # [Manufacturer] GPIO pin assignments
-├── status.h                  # [Manufacturer] Debug logging flag
+├── ApplicationConfig.h         # Runtime config struct (all settings)
+├── ApplicationConfigStorage    # NVS read/write for persistent config + image index
+├── config_default.h            # Default empty credentials (safe to commit)
 │
-├── battery.cpp/.h            # Battery voltage reading (ADC)
-└── Screen.h                  # Abstract screen interface
+├── GDEP133C02.c/.h             # [Manufacturer] EPD init, command sequences, refresh
+├── comm.c/.h                   # [Manufacturer] SPI bus init, GPIO, transactions
+├── pindefine.h                 # [Manufacturer] GPIO pin assignments
+├── status.h                    # [Manufacturer] Debug flag
+│
+├── battery.cpp/.h              # Battery voltage ADC (currently disabled)
+└── Screen.h                    # Abstract screen interface
 
 data/
-└── config.html               # Web portal HTML (uploaded to LittleFS via uploadfs)
+└── config.html                 # Web portal HTML (uploaded to LittleFS via uploadfs)
 
-platformio.ini                # Build config, library dependencies, partition table
-partitions.csv                # Custom flash partition layout (5.6 MB for LittleFS)
+platformio.ini                  # Build config, library dependencies, partition table
+partitions.csv                  # Custom flash partition layout
 ```
 
 ---
 
 ## Memory Management
 
-The ESP32-S3 has **8 MB PSRAM** which is critical for image processing:
+The ESP32-S3's **8 MB PSRAM** is the critical resource.
 
-| Buffer | Size | Purpose |
+### Standard image path (JPEG/PNG/BMP)
+
+| Buffer | Size | Notes |
 |---|---|---|
-| Display framebuffer | 960 KB | 4-bit packed, 2 pixels/byte |
-| RGB565 decode buffer | 3.84 MB | 1200×1600×2 bytes |
-| Dither output bitmaps (×5) | 1.2 MB | 1-bit per pixel, per colour |
-| Source image data | Variable | Freed after decode to reclaim PSRAM |
+| Display framebuffer | 960 KB | 4-bit packed, 2 pixels/byte, always allocated |
+| RGB565 decode buffer | 3.84 MB | Allocated during decode, freed before dithering |
+| Colour bitmaps (×5) | 1.2 MB | 1-bit per pixel per colour |
+| **Peak concurrent** | **~6 MB** | RGB565 + bitmaps + framebuffer |
 
-### PSRAM Optimisation
+For large JPEGs the raw source data is freed immediately after decode — before dithering begins — to avoid exceeding 8 MB.
 
-For large JPEG files (e.g., 3+ MB from a phone camera), the raw source data is freed **immediately after decoding** but **before dithering** begins. This prevents out-of-memory errors when the source file + decode buffer + dither bitmaps would otherwise exceed 8 MB.
+### Pre-encoded `.spectra6` path
+
+| Buffer | Size | Notes |
+|---|---|---|
+| Display framebuffer | 960 KB | Always allocated |
+| Download buffer | ~1.14 MB | The `.spectra6` file itself |
+| Colour bitmaps (×5) | 1.2 MB | Direct memcpy from download buffer |
+| **Peak concurrent** | **~3.3 MB** | ~45% less than standard path |
 
 ---
 
