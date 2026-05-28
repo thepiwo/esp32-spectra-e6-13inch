@@ -57,7 +57,7 @@ struct ApplicationConfig {
     ditherMode = DITHER_FLOYD_STEINBERG;
     scalingMode = SCALE_FIT; // Default to fit/letterbox (preserve entire image)
     sleepMinutes = 0;
-    imageChangeMinutes = 1;
+    imageChangeMinutes = 60;
     quietHoursStart = 0;
     quietHoursEnd   = 0;
     utcOffsetHours  = 0;

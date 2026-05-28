@@ -229,6 +229,28 @@ void ConfigurationServer::handleSave(AsyncWebServerRequest *request) {
       config.utcOffsetHours = constrain(
           request->getParam("utc_offset_hours", true)->value().toInt(), -12, 14);
 
+    if (config.imageChangeMinutes > 0) {
+      if (config.imageChangeMinutes < 60)
+        config.imageChangeMinutes = 60;
+      config.imageChangeMinutes = (config.imageChangeMinutes / 60) * 60;
+    }
+
+    if (config.sleepMinutes > 0 && config.sleepMinutes < 60) {
+      config.sleepMinutes = 60;
+    }
+
+    if (config.sleepMinutes > 0) {
+      config.sleepMinutes = (config.sleepMinutes / 60) * 60;
+    }
+
+    if (config.sleepMinutes > 0 && config.imageChangeMinutes > 0) {
+      uint16_t remainder = config.imageChangeMinutes % config.sleepMinutes;
+      if (remainder != 0) {
+        config.imageChangeMinutes +=
+            (uint16_t)(config.sleepMinutes - remainder);
+      }
+    }
+
     /*
     // Auto-clear pin if folder URL changed — keeping it for now per user
     preference to stick to image if (config.folderUrl !=
@@ -300,11 +322,11 @@ String ConfigurationServer::getConfigurationPage() {
   // Image change interval dropdown
   uint16_t ic = currentConfiguration.imageChangeMinutes;
   setSelected(html, "{{IMG_CHG_SEL_0}}", ic == 0);
-  setSelected(html, "{{IMG_CHG_SEL_1}}", ic == 1);
-  setSelected(html, "{{IMG_CHG_SEL_15}}", ic == 15);
-  setSelected(html, "{{IMG_CHG_SEL_30}}", ic == 30);
   setSelected(html, "{{IMG_CHG_SEL_60}}", ic == 60);
   setSelected(html, "{{IMG_CHG_SEL_120}}", ic == 120);
+  setSelected(html, "{{IMG_CHG_SEL_180}}", ic == 180);
+  setSelected(html, "{{IMG_CHG_SEL_240}}", ic == 240);
+  setSelected(html, "{{IMG_CHG_SEL_480}}", ic == 480);
   setSelected(html, "{{IMG_CHG_SEL_360}}", ic == 360);
   setSelected(html, "{{IMG_CHG_SEL_720}}", ic == 720);
   setSelected(html, "{{IMG_CHG_SEL_1440}}", ic == 1440);
@@ -312,11 +334,11 @@ String ConfigurationServer::getConfigurationPage() {
   // Sleep interval dropdown
   uint16_t sl = currentConfiguration.sleepMinutes;
   setSelected(html, "{{SLEEP_SEL_0}}", sl == 0);
-  setSelected(html, "{{SLEEP_SEL_15}}", sl == 15);
-  setSelected(html, "{{SLEEP_SEL_30}}", sl == 30);
   setSelected(html, "{{SLEEP_SEL_60}}", sl == 60);
   setSelected(html, "{{SLEEP_SEL_120}}", sl == 120);
+  setSelected(html, "{{SLEEP_SEL_180}}", sl == 180);
   setSelected(html, "{{SLEEP_SEL_240}}", sl == 240);
+  setSelected(html, "{{SLEEP_SEL_480}}", sl == 480);
   setSelected(html, "{{SLEEP_SEL_360}}", sl == 360);
   setSelected(html, "{{SLEEP_SEL_720}}", sl == 720);
   setSelected(html, "{{SLEEP_SEL_1440}}", sl == 1440);

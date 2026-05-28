@@ -21,7 +21,7 @@ ApplicationConfigStorage configStorage;
 std::unique_ptr<ApplicationConfig> appConfig;
 
 // Survives deep sleep — tracks wake cycles for image change interval
-RTC_DATA_ATTR static uint16_t wakesSinceImageChange = 0;
+RTC_DATA_ATTR static uint32_t elapsedMinutesSinceImageChange = 0;
 
 void initializeDefaultConfig() {
   std::unique_ptr<ApplicationConfig> storedConfig = configStorage.load();
@@ -164,19 +164,22 @@ void setup() {
       printf("Timer wake-up detected.\r\n");
       if (appConfig->hasFolderUrl() && !appConfig->hasPinnedImage() &&
           appConfig->sleepMinutes > 0) {
-        wakesSinceImageChange++;
+        elapsedMinutesSinceImageChange += appConfig->sleepMinutes;
         bool shouldChange =
             (appConfig->imageChangeMinutes == 0) ||
-            ((uint32_t)wakesSinceImageChange * appConfig->sleepMinutes >=
-             appConfig->imageChangeMinutes);
+            (elapsedMinutesSinceImageChange >= appConfig->imageChangeMinutes);
         if (shouldChange) {
           uint16_t idx = configStorage.loadImageIndex();
           configStorage.saveImageIndex(idx + 1);
-          wakesSinceImageChange = 0;
+          if (appConfig->imageChangeMinutes > 0) {
+            elapsedMinutesSinceImageChange %= appConfig->imageChangeMinutes;
+          } else {
+            elapsedMinutesSinceImageChange = 0;
+          }
           printf("Folder: advanced image index to %d\r\n", idx + 1);
         } else {
-          printf("Image change: %d/%d minutes elapsed\r\n",
-                 wakesSinceImageChange * appConfig->sleepMinutes,
+          printf("Image change: %lu/%d minutes elapsed\r\n",
+                 (unsigned long)elapsedMinutesSinceImageChange,
                  appConfig->imageChangeMinutes);
         }
       } else if (appConfig->hasPinnedImage()) {
@@ -296,19 +299,22 @@ void setup() {
       printf("Timer wake-up detected.\r\n");
       if (appConfig->hasFolderUrl() && !appConfig->hasPinnedImage() &&
           appConfig->sleepMinutes > 0) {
-        wakesSinceImageChange++;
+        elapsedMinutesSinceImageChange += appConfig->sleepMinutes;
         bool shouldChange =
             (appConfig->imageChangeMinutes == 0) ||
-            ((uint32_t)wakesSinceImageChange * appConfig->sleepMinutes >=
-             appConfig->imageChangeMinutes);
+            (elapsedMinutesSinceImageChange >= appConfig->imageChangeMinutes);
         if (shouldChange) {
           uint16_t idx = configStorage.loadImageIndex();
           configStorage.saveImageIndex(idx + 1);
-          wakesSinceImageChange = 0;
+          if (appConfig->imageChangeMinutes > 0) {
+            elapsedMinutesSinceImageChange %= appConfig->imageChangeMinutes;
+          } else {
+            elapsedMinutesSinceImageChange = 0;
+          }
           printf("Folder: advanced image index to %d\r\n", idx + 1);
         } else {
-          printf("Image change: %d/%d minutes elapsed\r\n",
-                 wakesSinceImageChange * appConfig->sleepMinutes,
+          printf("Image change: %lu/%d minutes elapsed\r\n",
+                 (unsigned long)elapsedMinutesSinceImageChange,
                  appConfig->imageChangeMinutes);
         }
       } else if (appConfig->hasPinnedImage()) {

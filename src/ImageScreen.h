@@ -19,6 +19,7 @@
 #include <LittleFS.h>
 
 RTC_DATA_ATTR static char storedImageETag[128] = "";
+RTC_DATA_ATTR static uint32_t storedImageHash = 0;
 
 struct ColorImageBitmaps {
   uint8_t *blackBitmap;
@@ -69,6 +70,8 @@ private:
   void displayWifiInfo();
   void storeImageETag(const String &etag);
   String getStoredImageETag();
+  void storeImageHash(uint32_t hash);
+  uint32_t getStoredImageHash();
   std::unique_ptr<ColorImageBitmaps> loadFromLittleFS();
   std::unique_ptr<ColorImageBitmaps> loadFromFolder();
   std::unique_ptr<ColorImageBitmaps>

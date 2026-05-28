@@ -25,6 +25,14 @@ void ImageScreen::storeImageETag(const String &etag) {
 
 String ImageScreen::getStoredImageETag() { return String(storedImageETag); }
 
+void ImageScreen::storeImageHash(uint32_t hash) {
+  storedImageHash = hash;
+  Serial.printf("Stored image hash in RTC memory: %lu\n",
+                (unsigned long)hash);
+}
+
+uint32_t ImageScreen::getStoredImageHash() { return storedImageHash; }
+
 std::unique_ptr<DownloadResult> ImageScreen::download() {
   String storedETag = getStoredImageETag();
   Serial.println("Using stored ETag for request: '" + storedETag + "'");
@@ -1087,11 +1095,6 @@ std::unique_ptr<ColorImageBitmaps> ImageScreen::loadFromFolder() {
 }
 
 void ImageScreen::render() {
-  display.init(115200);
-  display.setRotation(ApplicationConfig::DISPLAY_ROTATION);
-  display.setFullWindow();
-  display.fillScreen(GxEPD_WHITE);
-
   LittleFS.begin(true);
 
   std::unique_ptr<ColorImageBitmaps> bitmaps = nullptr;
@@ -1125,7 +1128,17 @@ void ImageScreen::render() {
     }
 
     if (downloadResult->httpCode == HTTP_CODE_OK) {
+      uint32_t previousHash = getStoredImageHash();
+      if (previousHash != 0 && downloadResult->contentHash == previousHash) {
+        Serial.println(
+            "Single URL payload unchanged (hash match), skipping refresh");
+        return;
+      }
+
       bitmaps = processImageData(downloadResult->data, downloadResult->size);
+      if (bitmaps) {
+        storeImageHash(downloadResult->contentHash);
+      }
     } else {
       printf("Failed to download image (HTTP %d)\r\n",
              downloadResult->httpCode);
@@ -1136,6 +1149,11 @@ void ImageScreen::render() {
     printf("No image available from any source\r\n");
     return;
   }
+
+  display.init(115200);
+  display.setRotation(ApplicationConfig::DISPLAY_ROTATION);
+  display.setFullWindow();
+  display.fillScreen(GxEPD_WHITE);
 
   renderBitmaps(*bitmaps);
   // Stats removed — clean image only

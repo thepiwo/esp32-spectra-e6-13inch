@@ -2,6 +2,15 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 
+static uint32_t fnv1aAppend(uint32_t hash, const uint8_t *data, size_t len) {
+  const uint32_t FNV_PRIME = 16777619u;
+  for (size_t i = 0; i < len; i++) {
+    hash ^= data[i];
+    hash *= FNV_PRIME;
+  }
+  return hash;
+}
+
 HttpDownloader::HttpDownloader() {}
 
 HttpDownloader::~HttpDownloader() {}
@@ -109,6 +118,7 @@ HttpDownloader::downloadChunked(WiFiClient *stream) {
   }
 
   result->size = 0;
+  result->contentHash = 2166136261u;
 
   while (stream->connected() || stream->available()) {
     char chunkSizeBuffer[16];
@@ -164,6 +174,8 @@ HttpDownloader::downloadChunked(WiFiClient *stream) {
       Serial.printf("Warning: Expected %ld bytes, got %d bytes\n", chunkSize,
                     bytesRead);
     }
+    result->contentHash = fnv1aAppend(
+        result->contentHash, result->data + result->size, bytesRead);
     result->size += bytesRead;
 
     uint8_t trailer[2];
@@ -191,6 +203,7 @@ HttpDownloader::downloadRegular(WiFiClient *stream) {
   }
 
   result->size = 0;
+  result->contentHash = 2166136261u;
   const size_t chunkSize = 1024;
 
   // Wait for data to be available if connected
@@ -218,6 +231,8 @@ HttpDownloader::downloadRegular(WiFiClient *stream) {
       delay(10);
       continue;
     }
+    result->contentHash = fnv1aAppend(
+        result->contentHash, result->data + result->size, bytesRead);
     result->size += bytesRead;
   }
   return result;

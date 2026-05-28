@@ -10,8 +10,10 @@ struct DownloadResult {
   size_t size;
   int httpCode;
   String etag;
+  uint32_t contentHash;
 
-  DownloadResult() : data(nullptr), size(0), httpCode(0), etag("") {}
+  DownloadResult()
+      : data(nullptr), size(0), httpCode(0), etag(""), contentHash(0) {}
 
   ~DownloadResult() {
     if (data != nullptr) {

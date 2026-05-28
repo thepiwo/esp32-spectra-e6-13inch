@@ -463,27 +463,30 @@
                 <label for="imageChangeMinutes">Change Image Every</label>
                 <select id="imageChangeMinutes" name="imageChangeMinutes">
                     <option value="0" {{IMG_CHG_SEL_0}}>Every wake</option>
-                    <option value="1" {{IMG_CHG_SEL_1}}>1 minute</option>
-                    <option value="15" {{IMG_CHG_SEL_15}}>15 minutes</option>
-                    <option value="30" {{IMG_CHG_SEL_30}}>30 minutes</option>
                     <option value="60" {{IMG_CHG_SEL_60}}>1 hour</option>
                     <option value="120" {{IMG_CHG_SEL_120}}>2 hours</option>
+                    <option value="180" {{IMG_CHG_SEL_180}}>3 hours</option>
+                    <option value="240" {{IMG_CHG_SEL_240}}>4 hours</option>
                     <option value="360" {{IMG_CHG_SEL_360}}>6 hours</option>
+                    <option value="480" {{IMG_CHG_SEL_480}}>8 hours</option>
                     <option value="720" {{IMG_CHG_SEL_720}}>12 hours</option>
                     <option value="1440" {{IMG_CHG_SEL_1440}}>24 hours</option>
                 </select>
+                <small style="color: #6b7280; font-size: 12px; margin-top: 4px; display: block;">
+                    Hour-based intervals only. If wake interval is set, image change interval is automatically aligned to whole wake cycles.
+                </small>
             </div>
 
             <div class="form-group">
                 <label for="sleepMinutes">Wake From Sleep Every</label>
                 <select id="sleepMinutes" name="sleepMinutes">
                     <option value="0" {{SLEEP_SEL_0}}>Never (manual reset only)</option>
-                    <option value="15" {{SLEEP_SEL_15}}>15 minutes</option>
-                    <option value="30" {{SLEEP_SEL_30}}>30 minutes</option>
                     <option value="60" {{SLEEP_SEL_60}}>1 hour</option>
                     <option value="120" {{SLEEP_SEL_120}}>2 hours</option>
+                    <option value="180" {{SLEEP_SEL_180}}>3 hours</option>
                     <option value="240" {{SLEEP_SEL_240}}>4 hours</option>
                     <option value="360" {{SLEEP_SEL_360}}>6 hours</option>
+                    <option value="480" {{SLEEP_SEL_480}}>8 hours</option>
                     <option value="720" {{SLEEP_SEL_720}}>12 hours</option>
                     <option value="1440" {{SLEEP_SEL_1440}}>24 hours</option>
                 </select>

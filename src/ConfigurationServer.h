@@ -18,7 +18,7 @@ struct Configuration {
   uint8_t ditherMode = 0;
   uint8_t scalingMode = 0; // Default to FIT (Letterbox)
   uint16_t sleepMinutes = 0;
-  uint16_t imageChangeMinutes = 30;
+  uint16_t imageChangeMinutes = 60;
   uint8_t quietHoursStart = 0;
   uint8_t quietHoursEnd   = 0;
   int8_t  utcOffsetHours  = 0;
@@ -29,7 +29,7 @@ struct Configuration {
                 const String &imageUrl, const String &folderUrl = "",
                 const String &pinnedImageUrl = "", uint8_t ditherMode = 0,
                 uint8_t scalingMode = 0, uint16_t sleepMinutes = 0,
-                uint16_t imageChangeMinutes = 30,
+                uint16_t imageChangeMinutes = 60,
                 uint8_t quietHoursStart = 0, uint8_t quietHoursEnd = 0,
                 int8_t utcOffsetHours = 0)
       : ssid(ssid), password(password), imageUrl(imageUrl),
